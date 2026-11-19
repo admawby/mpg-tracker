@@ -1,0 +1,56 @@
+# MPG Tracker
+
+A phone-first fuel log: record each fill-up in a few taps, review your history and stats, and export everything to Excel.
+
+- Fill-ups are pre-filled from your history: today's date, last octane, drive mode and station, and trip miles worked out from the odometer (or the other way round).
+- Tag chips for things that affect mileage (Towing, Road trip, Cold weather…), notes, optional price and station.
+- History by month with search, and tap to edit or delete.
+- Stats: average and pump-math MPG, best and worst tank, miles, fuel, tank range, days between fills, averages by drive mode and tag, and an MPG-per-tank chart.
+- Excel export, and import from an existing sheet (columns `Date, MPG, Gallons, Time, Miles, Fuel, Drive Mode, Cum Miles, Notes`).
+- Installable on an iPhone or Android home screen, and works offline.
+
+There are two ways to run it.
+
+## 1. No server (data stays on your phone)
+
+Open **https://admawby.github.io/mpg-tracker/** in Safari (or Chrome on Android), then **Share → Add to Home Screen**.
+
+- Fill-ups are stored in the browser's on-device storage (IndexedDB). Nothing is sent anywhere.
+- **Use it from the Home Screen icon.** Data in a regular Safari tab can be cleared by iOS after a few weeks without use; the home-screen app is exempt. Removing the icon deletes the data.
+- After each new fill-up the app offers **Back up**, which opens the share sheet with an `.xlsx` file. Save it to Files or iCloud Drive. You can turn the reminder off in Stats → Settings.
+- To restore or move phones, use Stats → **Import .xlsx** with a backup file.
+- Set your vehicle name in Stats → Settings.
+
+You can host the `static/` folder anywhere that serves static files. `.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main` (enable Pages with source **GitHub Actions**).
+
+## 2. Self-hosted server (one shared copy, automatic backups)
+
+A small Python server (stdlib + SQLite, openpyxl for Excel) for running on a home server with Docker.
+
+```sh
+docker compose up -d --build      # http://<host>:8840
+```
+
+Settings come from environment variables (or a `.env` file next to `compose.yml`):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MPG_VEHICLE` | `My Truck` | Name shown in the app and export |
+| `MPG_BACKUP_PATH` | `./backup` | Host folder that gets `<vehicle>_MPG.xlsx` + `history/mpg_<time>.sqlite` (last 60) after each **new** fill-up. A NAS share works. |
+| `TZ` | `UTC` | Time zone for timestamps |
+| `OLLAMA_URL` | *(empty)* | Optional photo scan: an [Ollama](https://ollama.com) server with a vision model. When set, a **Scan a photo** button reads the trip computer, pump or receipt. |
+| `VISION_MODEL` | `qwen3-vl:8b` | Ollama model used for photo scan |
+
+Anything specific to your machine (extra Docker networks, absolute paths) belongs in a `compose.override.yml`, which is gitignored.
+
+The server only accepts requests from private, CGNAT/Tailscale and Docker networks. Keep it off the open internet: use a VPN such as Tailscale to reach it away from home. Service workers need HTTPS, so for offline use and home-screen install reach it over HTTPS (for example `tailscale serve`).
+
+- Import from the command line: `docker compose run --rm mpg-tracker python app.py import /data/file.xlsx`
+- API: `GET/POST api/fillups`, `PUT/DELETE api/fillups/<id>` (writes need the header `X-MPG: 1`), `GET api/export.xlsx`, `POST api/import` (raw .xlsx body), `POST api/scan` (JPEG body).
+- `deploy.sh` copies the app to a Docker host over SSH and rebuilds it. Set `DEPLOY_HOST` and `DEPLOY_DIR` in the environment or a gitignored `.deploy.env`.
+
+## How the modes are chosen
+
+`static/config.js` says `{mode: "local"}`. The Python server answers `config.js` itself with `{mode: "server", …}`, so the same front end runs either way. `static/store.js` holds both storage back ends and the in-browser Excel reader and writer.
+
+When you change the UI, bump `VERSION` in `static/sw.js` so installed copies pick up the update.

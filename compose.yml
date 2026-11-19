@@ -1,0 +1,20 @@
+services:
+  mpg-tracker:
+    build: .
+    image: local/mpg-tracker
+    container_name: mpg-tracker
+    restart: unless-stopped
+    ports:
+      - "8840:8840"
+    volumes:
+      - ./data:/data
+      # Copy of the data written after each new fill-up (point at a NAS share if you like)
+      - ${MPG_BACKUP_PATH:-./backup}:/backup
+    environment:
+      MPG_VEHICLE: ${MPG_VEHICLE:-My Truck}
+      MPG_BACKUP_DIR: /backup
+      TZ: ${TZ:-UTC}
+      # Optional photo scan: an Ollama server with a vision model, e.g. http://ollama:11434
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      VISION_MODEL: ${VISION_MODEL:-qwen3-vl:8b}
+# Site-specific settings (extra networks, paths) go in compose.override.yml, which is gitignored.

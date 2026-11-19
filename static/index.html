@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#11110f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MPG">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css">
+<title>MPG Tracker</title>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top" id="top">
+  <div class="top-row">
+    <p class="brand"><span class="brand-mark" aria-hidden="true"></span><span id="vehicle">MPG</span> <span class="brand-sub">fuel log</span></p>
+    <p class="sync" id="sync" role="status" aria-live="polite"></p>
+  </div>
+  <section class="hero" aria-labelledby="hero-label">
+    <div class="hero-num">
+      <p class="eyebrow" id="hero-label">Last 5 fill-ups</p>
+      <p class="big"><span id="hero-mpg">--</span><span class="unit">mpg</span></p>
+      <p class="hero-delta" id="hero-delta"></p>
+    </div>
+    <svg class="gauge" id="gauge" viewBox="0 0 120 72" aria-hidden="true">
+      <path class="gauge-track" d="M10 64 A50 50 0 0 1 110 64"/>
+      <path class="gauge-fill" id="gauge-fill" d="M10 64 A50 50 0 0 1 110 64" pathLength="100"/>
+      <g id="gauge-ticks"></g>
+      <g class="needle" id="needle"><line x1="60" y1="64" x2="60" y2="22"/><circle cx="60" cy="64" r="4"/></g>
+      <text x="8" y="72" class="gauge-lbl" id="g-min">14</text>
+      <text x="112" y="72" class="gauge-lbl" text-anchor="end" id="g-max">22</text>
+    </svg>
+  </section>
+</header>
+
+<main id="main" tabindex="-1">
+  <!-- LOG -->
+  <section class="view" id="view-log" aria-labelledby="log-title">
+    <aside class="tip-card local-only" id="local-tip" hidden>
+      <p><b>Your fill-ups are stored on this phone only.</b> Add this page to your Home Screen (Share → Add to Home Screen) so Safari's cleanup can't erase them, and use Export now and then to keep a copy in Files.</p>
+      <button type="button" class="btn small ghost" id="tip-close">Got it</button>
+    </aside>
+    <div class="view-head">
+      <h1 id="log-title">New fill-up</h1>
+      <p class="muted" id="last-line"></p>
+    </div>
+
+    <form id="form" novalidate autocomplete="off">
+      <input type="hidden" name="id">
+      <div class="scan" id="scan">
+        <label class="scan-btn">
+          <input type="file" id="scan-file" accept="image/*">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V6a2 2 0 0 1 2-2h2M17 4h2a2 2 0 0 1 2 2v2M21 16v2a2 2 0 0 1-2 2h-2M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg>
+          <span class="scan-text"><b id="scan-title">Scan a photo</b><span id="scan-sub">Dash trip screen, pump or receipt</span></span>
+        </label>
+        <img class="scan-thumb" id="scan-thumb" alt="" hidden>
+      </div>
+      <div class="grid2">
+        <label class="field">
+          <span class="lbl">Date</span>
+          <input type="date" name="date" required>
+        </label>
+        <label class="field">
+          <span class="lbl">Odometer <span class="auto" data-auto="odometer" hidden>auto</span></span>
+          <input name="odometer" inputmode="decimal" enterkeyhint="next" placeholder="">
+        </label>
+      </div>
+
+      <div class="grid3">
+        <label class="field">
+          <span class="lbl">Trip mi <span class="auto" data-auto="trip_miles" hidden>auto</span></span>
+          <input name="trip_miles" inputmode="decimal" enterkeyhint="next">
+        </label>
+        <label class="field">
+          <span class="lbl">Dash MPG</span>
+          <input name="dash_mpg" inputmode="decimal" enterkeyhint="next">
+        </label>
+        <label class="field">
+          <span class="lbl">Gallons</span>
+          <input name="gallons" inputmode="decimal" enterkeyhint="next">
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label class="field">
+          <span class="lbl">Drive time <span class="hint">h:mm</span></span>
+          <input name="drive_time" inputmode="numeric" placeholder="0:00" enterkeyhint="next">
+        </label>
+        <div class="field">
+          <span class="lbl" id="oct-lbl">Fuel</span>
+          <div class="seg" role="radiogroup" aria-labelledby="oct-lbl" id="octane"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="lbl" id="mode-lbl">Drive mode</span>
+        <div class="chips" role="radiogroup" aria-labelledby="mode-lbl" id="mode"></div>
+        <input name="drive_mode_other" class="other" placeholder="Other mode" hidden>
+      </div>
+
+      <div class="field">
+        <span class="lbl" id="tags-lbl">Tags</span>
+        <div class="chips" role="group" aria-labelledby="tags-lbl" id="tags"></div>
+      </div>
+
+      <label class="field">
+        <span class="lbl">Notes</span>
+        <textarea name="notes" rows="2" placeholder="Anything that affected this tank"></textarea>
+      </label>
+
+      <details class="more" id="more">
+        <summary><span>Cost &amp; station</span><span class="muted" id="cost-sum">optional</span></summary>
+        <div class="grid3">
+          <label class="field">
+            <span class="lbl">$/gal</span>
+            <input name="price_per_gal" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="lbl">Total $ <span class="auto" data-auto="total_cost" hidden>auto</span></span>
+            <input name="total_cost" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="lbl">Station</span>
+            <input name="station" list="station-list" autocapitalize="words">
+          </label>
+        </div>
+      </details>
+      <datalist id="station-list"></datalist>
+
+      <aside class="preview" id="preview" aria-live="polite">
+        <div><p class="eyebrow">Pump math</p><p class="pv" id="pv-calc">--</p></div>
+        <div><p class="eyebrow">vs average</p><p class="pv" id="pv-vs">--</p></div>
+        <div><p class="eyebrow">Mi / day</p><p class="pv" id="pv-days">--</p></div>
+      </aside>
+
+      <p class="err" id="form-err" role="alert"></p>
+      <div class="actions">
+        <button type="submit" class="btn primary" id="save"><span>Save fill-up</span></button>
+        <button type="button" class="btn ghost" id="cancel-edit" hidden>Cancel</button>
+        <button type="button" class="btn danger" id="delete" hidden>Delete</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="view" id="view-history" aria-labelledby="hist-title" hidden>
+    <div class="view-head row">
+      <h1 id="hist-title">History</h1>
+      <button type="button" class="btn small export">Export .xlsx</button>
+    </div>
+    <label class="field search">
+      <span class="sr">Search notes, modes, tags</span>
+      <input type="search" id="search" placeholder="Search notes, mode, tag, year">
+    </label>
+    <div id="hist-list"></div>
+  </section>
+
+  <!-- STATS -->
+  <section class="view" id="view-stats" aria-labelledby="stats-title" hidden>
+    <div class="view-head row">
+      <h1 id="stats-title">Stats</h1>
+      <div class="range seg" role="radiogroup" aria-label="Range" id="range"></div>
+    </div>
+    <div class="tiles" id="tiles"></div>
+
+    <figure class="chart-card">
+      <figcaption>
+        <span class="chart-title">MPG per tank</span>
+        <span class="legend" aria-hidden="true">
+          <span class="key k-line"></span>Dash
+          <span class="key k-avg"></span>5-tank avg
+        </span>
+      </figcaption>
+      <div class="chart" id="chart"></div>
+    </figure>
+
+    <section class="card" aria-labelledby="modes-title">
+      <h2 id="modes-title">By drive mode</h2>
+      <table class="tbl" id="modes"></table>
+    </section>
+
+    <section class="card" id="settings" aria-labelledby="set-title" hidden>
+      <h2 id="set-title">Settings</h2>
+      <div class="set-grid">
+        <label class="field">
+          <span class="lbl">Vehicle name</span>
+          <input id="set-vehicle" maxlength="40" autocapitalize="words" placeholder="My Truck">
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="set-remind">
+          <span>Offer a backup after each new fill-up</span>
+        </label>
+        <p class="muted" id="last-backup"></p>
+        <button type="button" class="btn danger" id="wipe">Delete all data on this phone</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="data-title">
+      <h2 id="data-title">Data</h2>
+      <p class="muted">Export everything as an Excel file. Import adds rows from an .xlsx (Date, MPG, Gallons, Time, Miles, Fuel, Drive Mode, Cum Miles, Notes columns) and skips duplicates.</p>
+      <div class="actions">
+        <button type="button" class="btn export">Export to Excel</button>
+        <label class="btn ghost file">Import .xlsx<input type="file" id="import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+      </div>
+    </section>
+  </section>
+</main>
+
+<nav class="tabbar" aria-label="Sections">
+  <button type="button" class="tab" data-view="log" aria-current="page">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3 21h14M15 9h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0V8l-3-3M8 7h4"/></svg>
+    <span>Log</span>
+  </button>
+  <button type="button" class="tab" data-view="history">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+    <span>History</span>
+  </button>
+  <button type="button" class="tab" data-view="stats">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+    <span>Stats</span>
+  </button>
+  <span class="tab-pill" aria-hidden="true"></span>
+</nav>
+
+<div class="backup-bar" id="backup-bar" role="dialog" aria-labelledby="backup-msg" hidden>
+  <p id="backup-msg"><b>Saved on this phone.</b> Back up a copy to Files?</p>
+  <div class="actions">
+    <button type="button" class="btn small primary" id="backup-now"><span>Back up</span></button>
+    <button type="button" class="btn small ghost" id="backup-later">Later</button>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="config.js"></script>
+<script src="store.js"></script>
+<script src="app.js" defer></script>
+</body>
+</html>
