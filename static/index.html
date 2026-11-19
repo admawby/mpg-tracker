@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#11110f">
+<script>
+  // Apply the saved palette before first paint
+  (function () { var t = localStorage.getItem("mpg-theme"); if (t && t !== "amber") document.documentElement.dataset.theme = t; })();
+</script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -186,19 +190,23 @@
       <table class="tbl" id="modes"></table>
     </section>
 
-    <section class="card" id="settings" aria-labelledby="set-title" hidden>
+    <section class="card" id="settings" aria-labelledby="set-title">
       <h2 id="set-title">Settings</h2>
       <div class="set-grid">
-        <label class="field">
+        <div class="field">
+          <span class="lbl" id="pal-lbl">Color palette</span>
+          <div class="palettes" role="radiogroup" aria-labelledby="pal-lbl" id="palettes"></div>
+        </div>
+        <label class="field local-only">
           <span class="lbl">Vehicle name</span>
           <input id="set-vehicle" maxlength="40" autocapitalize="words" placeholder="My Truck">
         </label>
-        <label class="toggle">
+        <label class="toggle local-only">
           <input type="checkbox" id="set-remind">
           <span>Offer a backup after each new fill-up</span>
         </label>
-        <p class="muted" id="last-backup"></p>
-        <button type="button" class="btn danger" id="wipe">Delete all data on this phone</button>
+        <p class="muted local-only" id="last-backup"></p>
+        <button type="button" class="btn danger local-only" id="wipe">Delete all data on this phone</button>
       </div>
     </section>
 

@@ -143,9 +143,32 @@
     const d = Math.floor((Date.now() - new Date(iso)) / 864e5);
     return d <= 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
   }
+  // ------------------------------------------------------------ palette
+  const PALETTES = [
+    { id: "amber", label: "Amber", bg: "#11110f", accent: "#f5a524" },
+    { id: "ocean", label: "Ocean", bg: "#0d1117", accent: "#4aa8ff" },
+    { id: "forest", label: "Forest", bg: "#0e1411", accent: "#7ddc8f" },
+    { id: "ruby", label: "Ruby", bg: "#140f10", accent: "#ff6b81" },
+    { id: "daylight", label: "Daylight", bg: "#f6f4ef", accent: "#9a5b00" },
+    { id: "glacier", label: "Glacier", bg: "#f3f6fa", accent: "#1d5fbf" }
+  ];
+  function applyTheme(id, save) {
+    const p = PALETTES.find((x) => x.id === id) || PALETTES[0];
+    if (p.id === "amber") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = p.id;
+    $('meta[name="theme-color"]').setAttribute("content", p.bg);
+    if (save) localStorage.setItem("mpg-theme", p.id);
+    $$("#palettes .pal").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.id === p.id)));
+    if (save && !$("#view-stats").hidden) renderChart(inRange().filter((r) => r.dash_mpg)); // gradient takes the new accent
+  }
+  $("#palettes").replaceChildren(...PALETTES.map((p) => h("button", {
+    type: "button", class: "pal", role: "radio", "data-id": p.id, "aria-checked": "false",
+    onclick: () => applyTheme(p.id, true),
+  }, h("span", { class: "sw", "aria-hidden": "true", style: `background:${p.bg}` }, h("i", { style: `background:${p.accent}` })), p.label)));
+  applyTheme(localStorage.getItem("mpg-theme") || "amber", false);
+
   function renderSettings() {
     if (!LOCAL) return;
-    $("#settings").hidden = false;
     const v = $("#set-vehicle");
     if (document.activeElement !== v) v.value = S.settings.vehicle;
     $("#set-remind").checked = S.settings.remind;
@@ -622,8 +645,9 @@
     const y0 = Math.floor(Math.min(...v)) - 1, y1 = Math.ceil(Math.max(...v)) + 1;
     const X = (x) => pl + ((x - t0) / (t1 - t0 || 1)) * (W - pl - pr), Y = (y) => pt + (1 - (y - y0) / (y1 - y0)) * (H - pt - pb);
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `MPG per tank, ${rows.length} tanks from ${f(Math.min(...v))} to ${f(Math.max(...v))}, latest ${f(v[v.length - 1])}` });
-    const defs = s("defs"), lg = s("linearGradient", { id: "amberfade", x1: 0, y1: 0, x2: 0, y2: 1 });
-    lg.append(s("stop", { offset: "0", "stop-color": "#f5a524", "stop-opacity": ".22" }), s("stop", { offset: "1", "stop-color": "#f5a524", "stop-opacity": "0" }));
+    const defs = s("defs"), lg = s("linearGradient", { id: "accentfade", x1: 0, y1: 0, x2: 0, y2: 1 });
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#f5a524";
+    lg.append(s("stop", { offset: "0", "stop-color": accent, "stop-opacity": ".22" }), s("stop", { offset: "1", "stop-color": accent, "stop-opacity": "0" }));
     defs.append(lg); svg.append(defs);
     const grid = s("g", { class: "grid" }), axis = s("g", { class: "axis" });
     const step = y1 - y0 > 8 ? 2 : 1;
