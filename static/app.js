@@ -5,11 +5,19 @@
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const OUTBOX = "mpg-outbox";
   const S = window.MPGStore, LOCAL = S.LOCAL;
-  const BASE_TAGS = ["Towing", "Road trip", "Oil change", "Cold weather", "Missed trip reset"];
+  const BASE_TAGS = ["Towing", "Road trip", "Cold weather", "Missed trip reset"];
+  // Maintenance categories and default reminder intervals (miles; null = no reminder)
+  const SERVICE_DEFAULTS = {
+    "Oil change": 7500, "Tire rotation": 7500, "Brakes": null, "Tires": null, "Battery": null,
+    "Air filter": 30000, "Cabin filter": 20000, "Alignment": null, "Coolant": 100000,
+    "Transmission": 150000, "Spark plugs": 100000, "Wipers": null, "Repair": null,
+  };
   const BASE_MODES = ["Normal", "Eco", "Sport"];
   const BASE_OCTANE = [87, 89, 93];
 
   let data = [];           // fill-ups, oldest first
+  let services = [];       // maintenance records, oldest first
+  let appSettings = {};    // {intervals: {category: miles|null}}
   let editing = null;      // row being edited, or null for a new fill-up
   const st = { octane: null, mode: null, tags: new Set(), user: {} };
   let range = "all";
@@ -90,11 +98,13 @@
     try {
       const j = await S.list();
       data = j.fillups;
+      services = j.services || [];
+      appSettings = j.settings || {};
       setVehicle(j.vehicle);
       if (!LOCAL) localStorage.setItem("mpg-cache", JSON.stringify(j));
     } catch {
       const c = JSON.parse(localStorage.getItem("mpg-cache") || "null");
-      if (c && !LOCAL) { data = c.fillups; setVehicle(c.vehicle); toast("Offline: showing last copy"); }
+      if (c && !LOCAL) { data = c.fillups; services = c.services || []; appSettings = c.settings || {}; setVehicle(c.vehicle); toast("Offline: showing last copy"); }
       else if (LOCAL) toast("Couldn't open this phone's storage");
     }
     renderAll();
@@ -617,7 +627,10 @@
       tile("Avg tank", f(trips.reduce((a, b) => a + b, 0) / (trips.length || 1), 0), "mi", trips.length ? `range ${f(Math.min(...trips), 0)}–${f(Math.max(...trips), 0)}` : ""),
       tile("Between fills", f(gaps.reduce((a, b) => a + b, 0) / (gaps.length || 1), 0), "days", gaps.length ? `${f(Math.min(...gaps), 0)}–${f(Math.max(...gaps), 0)} days` : ""),
     ];
-    if (spent) tiles.push(tile("Spent", `$${f(spent, 0)}`, "", `${rows.filter((r) => r.total_cost).length} receipts`, true));
+    if (spent) tiles.push(tile("Fuel spent", `$${f(spent, 0)}`, "", `${rows.filter((r) => r.total_cost).length} receipts`));
+    const svcIn = rows.length ? services.filter((r) => r.date >= rows[0].date) : [];
+    const svcCost = svcIn.reduce((a, r) => a + (r.cost || 0), 0);
+    if (svcIn.length) tiles.push(tile("Maintenance", `$${f(svcCost, 0)}`, "", miles && svcCost ? `${f((svcCost / miles) * 100, 1)}¢/mi · ${svcIn.length} services` : `${svcIn.length} services`, !spent));
     $("#tiles").replaceChildren(...tiles);
     $("#tiles").classList.remove("stagger"); void $("#tiles").offsetWidth; $("#tiles").classList.add("stagger");
     tiles.forEach((t, i) => t.style.setProperty("--i", i));
@@ -676,6 +689,13 @@
     const hair = s("line", { class: "hair", y1: pt, y2: H - pb, opacity: 0 });
     const dot = s("circle", { class: "dot", r: 5, cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] });
     const ring = s("circle", { class: "dot", r: 4, cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] });
+    // service events: small ticks on the baseline
+    for (const sv of services) {
+      const x = toDate(sv.date).getTime();
+      if (x < t0 || x > t1) continue;
+      const m = s("path", { class: "svc-mark", d: `M${X(x).toFixed(1)},${(H - pb - 1).toFixed(1)} l-4,-7 h8 z` });
+      svg.append(m);
+    }
     svg.append(hair, ring, dot);
     const hit = s("rect", { x: 0, y: 0, width: W, height: H, fill: "transparent", tabindex: 0, "aria-label": "Chart: use arrow keys to read each tank" });
     svg.append(hit);
@@ -690,11 +710,14 @@
       const [x, y] = pts[cur], r = rows[cur];
       hair.setAttribute("x1", x); hair.setAttribute("x2", x); hair.setAttribute("opacity", 1);
       dot.setAttribute("cx", x); dot.setAttribute("cy", y);
-      tip.replaceChildren(
+      tip.replaceChildren(...[
         h("div", {}, fmtDate(r.date, { month: "short", day: "numeric", year: "numeric" })),
         h("div", { class: "row" }, h("i"), h("b", {}, f(r.dash_mpg)), " dash"),
         h("div", { class: "row" }, h("i", { class: "d" }), f(avg[cur]), " 5-tank avg"),
-        r.notes ? h("div", { style: "max-width:200px;white-space:normal;color:var(--muted)" }, r.notes) : null);
+        r.notes ? h("div", { style: "max-width:200px;white-space:normal;color:var(--muted)" }, r.notes) : null,
+        ...services.filter((sv) => sv.date <= r.date && (cur === 0 || sv.date > rows[cur - 1].date))
+          .map((sv) => h("div", { style: "color:var(--text)" }, `▲ ${sv.category} ${fmtDate(sv.date)}`)),
+      ].filter(Boolean));
       tip.classList.add("on");
       const scale = box.clientWidth / W, tw = tip.offsetWidth;
       let left = x * scale + 12; if (left + tw > box.clientWidth) left = x * scale - tw - 12;
@@ -713,8 +736,254 @@
     });
   }
 
+  // ------------------------------------------------------------ service
+  const intervals = () => ({ ...SERVICE_DEFAULTS, ...(appSettings.intervals || {}) });
+  // Odometer readings from fill-ups and services, oldest first
+  function readings() {
+    return [...data, ...services].filter((r) => r.odometer).map((r) => ({ date: r.date, odo: r.odometer }))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.odo - b.odo));
+  }
+  // Recent miles per day: odometer change over (up to) the last 180 days of readings
+  function milesPerDay() {
+    const rs = readings();
+    if (rs.length < 2) return null;
+    const last = rs[rs.length - 1];
+    const cut = new Date(toDate(last.date) - 180 * 864e5).toISOString().slice(0, 10);
+    const first = rs.find((r) => r.date >= cut && r !== last) || rs[0];
+    const d = days(first.date, last.date);
+    return d > 0 && last.odo > first.odo ? (last.odo - first.odo) / d : null;
+  }
+  function estOdometer(onDate = todayISO()) {
+    const rs = readings();
+    if (!rs.length) return null;
+    const before = rs.filter((r) => r.date <= onDate), after = rs.filter((r) => r.date > onDate);
+    if (before.length && after.length) { // interpolate between surrounding readings
+      const a = before[before.length - 1], b = after[0];
+      return a.odo + ((b.odo - a.odo) * days(a.date, onDate)) / Math.max(1, days(a.date, b.date));
+    }
+    const last = before.length ? before[before.length - 1] : rs[0], rate = milesPerDay() || 0;
+    return last.odo + rate * Math.max(0, days(last.date, onDate));
+  }
+  function dueList() {
+    const est = estOdometer(), rate = milesPerDay(), iv = intervals(), out = [], missing = [];
+    for (const [cat, miles] of Object.entries(iv)) {
+      if (!miles) continue;
+      const done = services.filter((r) => r.category === cat);
+      if (!done.length) { missing.push(cat); continue; }
+      const last = done[done.length - 1], lastOdo = last.odometer ?? estOdometer(last.date);
+      if (lastOdo == null || est == null) continue;
+      const left = lastOdo + miles - est, used = (est - lastOdo) / miles;
+      const status = left < 0 ? "over" : left < Math.max(500, miles * 0.1) ? "soon" : "ok";
+      const eta = rate && left > 0 ? new Date(Date.now() + (left / rate) * 864e5) : null;
+      out.push({ cat, miles, last, lastOdo, left, used, status, eta });
+    }
+    out.sort((a, b) => a.left - b.left);
+    return { items: out, missing, est, rate };
+  }
+  const wrench = () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", "M14.7 6.3a4 4 0 0 0-5.4 5.1L3.6 17.1a1.9 1.9 0 0 0 2.7 2.7l5.7-5.7a4 4 0 0 0 5.1-5.4l-2.5 2.5-2.3-.4-.4-2.3z");
+    svg.append(p); return svg;
+  };
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const dueText = (d) => d.left < 0 ? `Overdue by ~${f(-d.left, 0)} mi` : `Due in ~${f(d.left, 0)} mi`;
+
+  function renderDueBanner() {
+    const b = $("#due-banner"), { items } = dueList();
+    const urgent = items.filter((d) => d.status !== "ok");
+    b.hidden = !urgent.length;
+    if (!urgent.length) return;
+    const top = urgent[0];
+    b.className = "due-banner" + (top.status === "over" ? " over" : "");
+    b.replaceChildren(wrench(), h("span", {}, `${top.cat}: ${dueText(top).toLowerCase()}`,
+      urgent.length > 1 ? ` · +${urgent.length - 1} more` : ""));
+  }
+  $("#due-banner").addEventListener("click", () => { show("service"); window.scrollTo({ top: 0 }); });
+
+  const svcForm = $("#svc-form");
+  const G = (n) => svcForm.elements[n];
+  let svcEditing = null, svcCat = null;
+
+  function svcCategories() {
+    const used = freq(services.map((r) => r.category));
+    return [...new Set([...used.map((u) => u.k), ...Object.keys(SERVICE_DEFAULTS)])];
+  }
+  function renderSvcCats() {
+    const cats = svcCategories(), other = svcCat === "__other";
+    $("#svc-cats").replaceChildren(
+      ...cats.map((c) => h("button", { type: "button", class: "chip", role: "radio", "aria-checked": String(svcCat === c),
+        onclick: () => { svcCat = c; G("category_other").hidden = true; renderSvcCats(); svcAutofill(); } }, c)),
+      h("button", { type: "button", class: "chip", role: "radio", "aria-checked": String(other),
+        onclick: () => { svcCat = "__other"; renderSvcCats(); G("category_other").hidden = false; G("category_other").focus(); } }, "Other…"));
+    $("#shop-list").replaceChildren(...freq(services.map((r) => r.shop)).map((x) => h("option", { value: x.k })));
+  }
+  function svcAutofill() { // last shop and cost for this category
+    if (svcEditing || !svcCat || svcCat === "__other") return;
+    const prev = services.filter((r) => r.category === svcCat).pop();
+    if (prev?.shop && (!G("shop").value || G("shop").dataset.auto)) { G("shop").value = prev.shop; G("shop").dataset.auto = "1"; }
+    G("cost").placeholder = prev?.cost ? f(prev.cost, 2) : "";
+  }
+  function openSvcForm(row, cat) {
+    svcEditing = row || null;
+    svcForm.reset();
+    delete G("shop").dataset.auto;
+    $("#svc-err").textContent = "";
+    $("#svc-scan").hidden = !S.cfg.scan;
+    $("#svc-scan-thumb").hidden = true;
+    $("#svc-scan-title").textContent = "Scan a receipt";
+    $("#svc-scan-sub").textContent = "Fills in date, shop, cost and mileage";
+    const known = new Set(svcCategories());
+    if (row) {
+      for (const k of ["date", "odometer", "cost", "shop", "notes"]) G(k).value = row[k] ?? "";
+      svcCat = known.has(row.category) ? row.category : row.category ? "__other" : null;
+      G("category_other").value = svcCat === "__other" ? row.category : "";
+      $("#svc-form-title").textContent = `Edit service · ${fmtDate(row.date, { month: "short", day: "numeric", year: "numeric" })}`;
+      $("#svc-save span").textContent = "Save changes";
+    } else {
+      G("date").value = todayISO();
+      svcCat = cat || null;
+      $("#svc-form-title").textContent = "New service";
+      $("#svc-save span").textContent = "Save service";
+    }
+    G("category_other").hidden = svcCat !== "__other";
+    $("#svc-delete").hidden = !row;
+    svcOdoHint();
+    renderSvcCats(); svcAutofill();
+    svcForm.hidden = false;
+    svcForm.classList.remove("stagger"); void svcForm.offsetWidth;
+    svcForm.style.animation = "none"; void svcForm.offsetWidth; svcForm.style.animation = "rise .45s var(--ease-out) both";
+    svcForm.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+  }
+  function svcOdoHint() {
+    const est = estOdometer(G("date").value || todayISO());
+    G("odometer").placeholder = est ? `≈ ${f(est, 0)}` : "";
+    $("#svc-odo-hint").textContent = est && !svcEditing ? "blank = estimate" : "";
+  }
+  G("date").addEventListener("change", svcOdoHint);
+  G("shop").addEventListener("input", () => delete G("shop").dataset.auto);
+  $("#svc-add").addEventListener("click", () => openSvcForm(null));
+  $("#svc-cancel").addEventListener("click", () => { svcForm.hidden = true; svcEditing = null; });
+
+  svcForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("#svc-err");
+    const cat = svcCat === "__other" ? G("category_other").value.trim() : svcCat;
+    if (!G("date").value) { err.textContent = "Pick a date"; return; }
+    if (!cat) { err.textContent = "Pick what was done"; return; }
+    for (const k of ["odometer", "cost"]) if (G(k).value.trim() && num(G(k).value) == null) { err.textContent = `${k === "cost" ? "Cost" : "Odometer"} isn't a number`; return; }
+    let odo = num(G("odometer").value), estimated = false;
+    if (odo == null && !svcEditing) { const est = estOdometer(G("date").value); if (est) { odo = Math.round(est); estimated = true; } }
+    const body = { date: G("date").value, odometer: odo, category: cat, cost: num(G("cost").value),
+      shop: G("shop").value.trim() || null, notes: G("notes").value.trim() || null };
+    if (estimated) body.notes = [body.notes, "Odometer estimated"].filter(Boolean).join(". ");
+    err.textContent = "";
+    const btn = $("#svc-save"); btn.disabled = true; btn.classList.add("saving");
+    try {
+      if (svcEditing) { await S.update(svcEditing.id, body, "services"); toast("Changes saved"); }
+      else { await S.create(body, "services"); toast(estimated ? `Saved · odometer estimated at ${f(odo, 0)}` : "Service saved"); }
+      const wasNew = !svcEditing;
+      svcForm.hidden = true; svcEditing = null;
+      await load();
+      if (LOCAL && wasNew && S.settings.remind) offerBackup();
+    } catch (ex) { err.textContent = ex.message; }
+    finally { setTimeout(() => { btn.disabled = false; btn.classList.remove("saving"); }, 350); }
+  });
+  $("#svc-delete").addEventListener("click", async () => {
+    if (!svcEditing || !confirm(`Delete the ${svcEditing.category} on ${fmtDate(svcEditing.date)}?`)) return;
+    try { await S.remove(svcEditing.id, "services"); toast("Deleted"); svcForm.hidden = true; svcEditing = null; await load(); }
+    catch (ex) { $("#svc-err").textContent = ex.message; }
+  });
+  $("#svc-scan-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const box = $("#svc-scan"), thumb = $("#svc-scan-thumb");
+    thumb.src = URL.createObjectURL(file); thumb.hidden = false; thumb.alt = "Scanned receipt";
+    box.classList.add("busy");
+    $("#svc-scan-title").textContent = "Reading receipt…";
+    $("#svc-scan-sub").textContent = "First scan can take ~40 s";
+    try {
+      const r = await S.scan(await shrink(file).catch(() => file), "service");
+      const got = [];
+      if (r.date) { G("date").value = r.date; got.push("date"); svcOdoHint(); }
+      if (r.odometer != null) { G("odometer").value = r.odometer; got.push("mileage"); }
+      if (r.cost != null) { G("cost").value = r.cost.toFixed(2); got.push("cost"); }
+      if (r.shop) { G("shop").value = r.shop; delete G("shop").dataset.auto; got.push("shop"); }
+      if (r.category) { svcCat = r.category; G("category_other").hidden = true; renderSvcCats(); got.push("service"); }
+      if (r.notes && !G("notes").value) { G("notes").value = r.notes; got.push("notes"); }
+      $("#svc-scan-title").textContent = got.length ? `Filled ${got.join(", ")}` : "Couldn't read the receipt";
+      $("#svc-scan-sub").textContent = got.length ? "Check them before saving" : "Try again flatter, with less glare";
+    } catch (ex) {
+      $("#svc-scan-title").textContent = "Scan failed";
+      $("#svc-scan-sub").textContent = ex.message;
+    } finally { box.classList.remove("busy"); }
+  });
+
+  function renderService() {
+    const { items, missing, est, rate } = dueList();
+    $("#svc-est").textContent = est ? `Odometer now ≈ ${f(est, 0)} mi${rate ? ` · ${f(rate, 0)} mi/day lately` : ""}` : "Log a fill-up or service with an odometer reading to start reminders.";
+    $("#due").replaceChildren(
+      ...items.map((d, i) => h("button", {
+        type: "button", class: `due ${d.status}`, style: `--i:${i}`,
+        "aria-label": `${d.cat}. ${dueText(d)}. Log one`,
+        onclick: () => openSvcForm(null, d.cat),
+      }, h("b", {}, d.cat), h("span", { class: "when" }, dueText(d)),
+      h("span", { class: "last" }, `Every ${f(d.miles, 0)} mi · last ${fmtDate(d.last.date, { month: "short", day: "numeric", year: "numeric" })} at ${f(d.lastOdo, 0)} mi` +
+        (d.eta ? ` · around ${d.eta.toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "")),
+      h("span", { class: "bar", "aria-hidden": "true" }, h("i", { style: `width:${Math.max(3, Math.min(100, d.used * 100))}%` })))),
+      ...(missing.length ? [h("p", { class: "due-none" }, `Not logged yet: ${missing.join(", ")}. Log one to start its reminder.`)] : []));
+    $("#due").classList.remove("stagger"); void $("#due").offsetWidth; $("#due").classList.add("stagger");
+
+    const year = String(new Date().getFullYear());
+    const sum = (rs) => rs.reduce((a, r) => a + (r.cost || 0), 0);
+    const rs = readings(), span = rs.length > 1 ? rs[rs.length - 1].odo - rs[0].odo : 0;
+    const total = sum(services);
+    $("#svc-tiles").replaceChildren(
+      h("div", { class: "tile" }, h("p", { class: "eyebrow" }, "This year"), h("p", { class: "v" }, `$${f(sum(services.filter((r) => r.date.startsWith(year))), 0)}`),
+        h("p", { class: "s" }, plural(services.filter((r) => r.date.startsWith(year)).length, "service"))),
+      h("div", { class: "tile" }, h("p", { class: "eyebrow" }, "All time"), h("p", { class: "v" }, `$${f(total, 0)}`),
+        h("p", { class: "s" }, span && total ? `${f((total / span) * 100, 1)}¢ per mile` : plural(services.length, "service"))));
+
+    const list = $("#svc-list");
+    if (!services.length) { list.replaceChildren(h("p", { class: "empty" }, "No services logged yet.")); return; }
+    const out = []; let yr = null, i = 0;
+    for (const r of services.slice().reverse()) {
+      const y = r.date.slice(0, 4);
+      if (y !== yr) {
+        yr = y;
+        const ys = services.filter((x) => x.date.startsWith(y));
+        out.push(h("div", { class: "month" }, h("h2", {}, y), h("span", {}, `${ys.length} service${ys.length > 1 ? "s" : ""} · $${f(sum(ys), 0)}`)));
+      }
+      const meta = [r.odometer && `${f(r.odometer, 0)} mi`, r.shop].filter(Boolean).join(" · ");
+      out.push(h("button", { type: "button", class: "entry svc-entry", style: `--i:${Math.min(i++, 12)}`,
+        "aria-label": `${r.category}, ${fmtDate(r.date, { month: "long", day: "numeric", year: "numeric" })}. Edit`,
+        onclick: () => openSvcForm(r) },
+        h("span", { class: "e-date" }, h("b", {}, String(toDate(r.date).getDate())), toDate(r.date).toLocaleDateString("en-US", { month: "short" })),
+        h("span", { class: "e-mid" }, h("span", { class: "e-meta", style: "display:block;color:var(--text);font-family:var(--sans);font-weight:650" }, r.category || "Service"),
+          meta ? h("span", { class: "e-note", style: "display:block" }, meta) : null,
+          r.notes ? h("span", { class: "e-note", style: "display:block" }, r.notes) : null),
+        h("span", { class: "e-mpg" }, r.cost != null ? `$${f(r.cost, 0)}` : "–")));
+    }
+    list.replaceChildren(...out);
+
+    const iv = intervals();
+    const cats = [...new Set([...Object.keys(SERVICE_DEFAULTS), ...services.map((r) => r.category).filter(Boolean)])];
+    if (!$("#intervals").contains(document.activeElement)) $("#intervals").replaceChildren(...cats.map((c) => {
+      const inp = h("input", { inputmode: "numeric", placeholder: "off", value: iv[c] ?? "", "aria-label": `${c} reminder interval in miles` });
+      inp.addEventListener("change", async () => {
+        const v = num(inp.value);
+        const next = { ...(appSettings.intervals || {}), [c]: v && v > 0 ? Math.round(v) : null };
+        try { appSettings = { ...appSettings, ...(await S.saveSettings({ intervals: next })) }; appSettings.intervals = next; toast(v ? `${c}: every ${f(v, 0)} mi` : `${c}: no reminder`); renderService(); renderDueBanner(); }
+        catch (ex) { toast(ex.message); }
+      });
+      return h("label", { class: "int-row" }, h("span", {}, c), inp);
+    }));
+  }
+
   // ------------------------------------------------------------ nav
-  const views = ["log", "history", "stats"];
+  const views = ["log", "history", "service", "stats"];
   function show(name) {
     views.forEach((v) => { $(`#view-${v}`).hidden = v !== name; });
     $$(".tab").forEach((t) => (t.dataset.view === name ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current")));
@@ -723,6 +992,7 @@
     v.style.animation = "none"; void v.offsetWidth; v.style.animation = "";
     if (name === "stats") renderStats();
     if (name === "history") renderHistory();
+    if (name === "service") renderService();
     history.replaceState(null, "", name === "log" ? location.pathname : `#${name}`);
   }
   $$(".tab").forEach((t) => t.addEventListener("click", () => { if (t.dataset.view === "log" && editing) fillForm(null); show(t.dataset.view); window.scrollTo({ top: 0 }); }));
@@ -754,6 +1024,8 @@
 
   function renderAll() {
     renderHero();
+    renderDueBanner();
+    if (!$("#view-service").hidden) renderService();
     renderSettings();
     prepareExport();
     if (!editing && !dirty) fillForm(null);

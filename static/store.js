@@ -12,8 +12,11 @@
   localStorage.setItem("mpg-mode", cfg.mode);
   const LOCAL = cfg.mode !== "server";
 
-  const FIELDS = ["date", "odometer", "trip_miles", "dash_mpg", "gallons", "drive_minutes", "octane",
-    "drive_mode", "price_per_gal", "total_cost", "station", "tags", "notes"];
+  const FIELDS = {
+    fillups: ["date", "odometer", "trip_miles", "dash_mpg", "gallons", "drive_minutes", "octane",
+      "drive_mode", "price_per_gal", "total_cost", "station", "tags", "notes"],
+    services: ["date", "odometer", "category", "cost", "shop", "notes"],
+  };
   const sortRows = (rows) => rows.sort((a, b) =>
     a.date < b.date ? -1 : a.date > b.date ? 1 : (a.odometer || 0) - (b.odometer || 0) || a.id - b.id);
   const nowISO = () => new Date().toISOString().slice(0, 19);
@@ -40,29 +43,34 @@
   }
   const server = {
     list: () => api("GET", "api/fillups"),
-    create: (b) => api("POST", "api/fillups", b),
-    update: (id, b) => api("PUT", `api/fillups/${id}`, b),
-    remove: (id) => api("DELETE", `api/fillups/${id}`),
+    create: (b, table = "fillups") => api("POST", `api/${table}`, b),
+    update: (id, b, table = "fillups") => api("PUT", `api/${table}/${id}`, b),
+    remove: (id, table = "fillups") => api("DELETE", `api/${table}/${id}`),
+    saveSettings: (obj) => api("PUT", "api/settings", obj),
     importFile: (file) => api("POST", "api/import", file),
     exportBlob: () => api("GET", "api/export.xlsx"),
-    scan: (blob) => api("POST", "api/scan", blob),
+    scan: (blob, mode = "") => api("POST", `api/scan${mode ? "?mode=" + mode : ""}`, blob),
   };
 
   // ---------------------------------------------------------------- IndexedDB
   let dbP = null;
   function db() {
     if (!dbP) dbP = new Promise((res, rej) => {
-      const r = indexedDB.open("mpg-tracker", 1);
-      r.onupgradeneeded = () => r.result.createObjectStore("fillups", { keyPath: "id", autoIncrement: true });
+      const r = indexedDB.open("mpg-tracker", 2);
+      r.onupgradeneeded = () => { // v1: fillups; v2 adds services. Existing data is kept.
+        const d = r.result;
+        for (const name of ["fillups", "services"])
+          if (!d.objectStoreNames.contains(name)) d.createObjectStore(name, { keyPath: "id", autoIncrement: true });
+      };
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
     return dbP;
   }
-  async function tx(mode, fn) {
+  async function tx(mode, fn, table = "fillups") {
     const d = await db();
     return new Promise((res, rej) => {
-      const t = d.transaction("fillups", mode), st = t.objectStore("fillups");
+      const t = d.transaction(table, mode), st = t.objectStore(table);
       let out;
       Promise.resolve(fn(st, (v) => (out = v))).catch(rej);
       t.oncomplete = () => res(out);
@@ -70,46 +78,59 @@
     });
   }
   const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-  function clean(b) {
+  function clean(b, table = "fillups") {
     const o = {};
-    for (const k of FIELDS) if (k in b) o[k] = b[k] === "" || b[k] === undefined ? null : b[k];
+    for (const k of FIELDS[table]) if (k in b) o[k] = b[k] === "" || b[k] === undefined ? null : b[k];
     if ("date" in o && !/^\d{4}-\d{2}-\d{2}$/.test(o.date || "")) throw new Error("date must be YYYY-MM-DD");
     return o;
   }
-  const allRows = () => tx("readonly", (st, done) => req(st.getAll()).then(done));
+  const allRows = (table = "fillups") => tx("readonly", (st, done) => req(st.getAll()).then(done), table);
+  const localSettings = () => { try { return JSON.parse(localStorage.getItem("mpg-settings") || "{}"); } catch { return {}; } };
   const local = {
-    async list() { return { vehicle: settings.vehicle, fillups: sortRows(await allRows()) }; },
-    async create(b) {
-      const row = { ...clean(b), created_at: nowISO(), updated_at: nowISO() };
+    async list() {
+      return { vehicle: settings.vehicle, fillups: sortRows(await allRows()), services: sortRows(await allRows("services")), settings: localSettings() };
+    },
+    async create(b, table = "fillups") {
+      const row = { ...clean(b, table), created_at: nowISO(), updated_at: nowISO() };
       if (!row.date) throw new Error("date is required");
-      row.id = await tx("readwrite", (st, done) => req(st.add(row)).then(done));
+      row.id = await tx("readwrite", (st, done) => req(st.add(row)).then(done), table);
       return row;
     },
-    async update(id, b) {
+    async update(id, b, table = "fillups") {
       return tx("readwrite", async (st, done) => {
         const cur = await req(st.get(id));
         if (!cur) throw new Error("not found");
-        const row = { ...cur, ...clean(b), updated_at: nowISO() };
+        const row = { ...cur, ...clean(b, table), updated_at: nowISO() };
         await req(st.put(row));
         done(row);
-      });
+      }, table);
     },
-    remove: (id) => tx("readwrite", (st, done) => req(st.delete(id)).then(() => done({ deleted: 1 }))),
-    clear: () => tx("readwrite", (st, done) => req(st.clear()).then(() => done(true))),
+    remove: (id, table = "fillups") => tx("readwrite", (st, done) => req(st.delete(id)).then(() => done({ deleted: 1 })), table),
+    async saveSettings(obj) { const s2 = { ...localSettings(), ...obj }; localStorage.setItem("mpg-settings", JSON.stringify(s2)); return s2; },
+    async clear() {
+      await tx("readwrite", (st, done) => req(st.clear()).then(() => done(true)));
+      await tx("readwrite", (st, done) => req(st.clear()).then(() => done(true)), "services");
+      return true;
+    },
     async importFile(file) {
-      const entries = await readXlsx(await file.arrayBuffer());
+      const { fillups, services } = await readXlsx(await file.arrayBuffer());
+      let added = 0, servicesAdded = 0;
       const have = new Set((await allRows()).map((r) => `${r.date}|${r.odometer}|${r.trip_miles}`));
-      let added = 0;
-      for (const e of entries) {
+      for (const e of fillups) {
         const key = `${e.date}|${e.odometer}|${e.trip_miles}`;
         if (have.has(key)) continue;
-        have.add(key);
-        await local.create(e);
-        added++;
+        have.add(key); await local.create(e); added++;
       }
-      return { added, skipped: entries.length - added };
+      const haveS = new Set((await allRows("services")).map((r) => `${r.date}|${r.category}|${r.odometer}`));
+      for (const e of services) {
+        const key = `${e.date}|${e.category}|${e.odometer}`;
+        if (haveS.has(key)) continue;
+        haveS.add(key); await local.create(e, "services"); servicesAdded++;
+      }
+      const total = fillups.length + services.length;
+      return { added: added + servicesAdded, services_added: servicesAdded, skipped: total - added - servicesAdded };
     },
-    async exportBlob() { return writeXlsx(sortRows(await allRows()), settings.vehicle); },
+    async exportBlob() { return writeXlsx(sortRows(await allRows()), sortRows(await allRows("services")), settings.vehicle); },
   };
 
   // ---------------------------------------------------------------- zip
@@ -171,7 +192,12 @@
   const colName = (i) => { let s = ""; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - m - 1) / 26; } return s; };
   const serial = (iso) => (Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) - Date.UTC(1899, 11, 30)) / 864e5;
 
-  function writeXlsx(rows, vehicle) {
+  const SVC_COLS = [["Date", 12], ["Odometer", 11], ["Service", 18], ["Cost", 10], ["Shop", 20], ["Notes", 48]];
+  function sheetXml(cols, lines) {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${cols.map(([, w], i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("")}</cols><sheetData>${lines.join("")}</sheetData></worksheet>`;
+  }
+  function writeXlsx(rows, services, vehicle) {
     const cell = (r, c, v, style) => {
       const ref = colName(c) + r, s = style ? ` s="${style}"` : "";
       if (v == null || v === "") return "";
@@ -185,18 +211,25 @@
         [r.trip_miles], [r.octane], [r.drive_mode], [r.odometer], [r.price_per_gal, 3], [r.total_cost, 4], [r.station], [r.tags], [r.notes]];
       lines.push(`<row r="${n}">${vals.map(([v, s], c) => cell(n, c, v, s)).join("")}</row>`);
     });
-    const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${COLS.map(([, w], i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("")}</cols><sheetData>${lines.join("")}</sheetData></worksheet>`;
+    const sheet = sheetXml(COLS, lines);
+    const sLines = [`<row r="1">${SVC_COLS.map(([h], i) => cell(1, i, h, 5)).join("")}</row>`];
+    (services || []).forEach((r, i) => {
+      const n = i + 2, vals = [[serial(r.date), 1], [r.odometer], [r.category], [r.cost, 4], [r.shop], [r.notes]];
+      sLines.push(`<row r="${n}">${vals.map(([v, st], c) => cell(n, c, v, st)).join("")}</row>`);
+    });
+    const sheet2 = sheetXml(SVC_COLS, sLines);
     const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="4"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/><numFmt numFmtId="165" formatCode="[h]:mm"/><numFmt numFmtId="166" formatCode="&quot;$&quot;0.000"/><numFmt numFmtId="167" formatCode="&quot;$&quot;0.00"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2B2A27"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-    const title = esc(String(vehicle || "MPG").slice(0, 31).replace(/[\\/?*[\]:]/g, " "));
+    let title = esc(String(vehicle || "MPG").slice(0, 31).replace(/[\\/?*[\]:]/g, " "));
+    if (title.trim().toLowerCase() === "service") title = "Fuel";
     return zip([
-      ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+      ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
       ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
-      ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${title}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
-      ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+      ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${title}" sheetId="1" r:id="rId1"/><sheet name="Service" sheetId="2" r:id="rId3"/></sheets></workbook>`],
+      ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`],
       ["xl/styles.xml", styles],
       ["xl/worksheets/sheet1.xml", sheet],
+      ["xl/worksheets/sheet2.xml", sheet2],
     ]);
   }
 
@@ -209,15 +242,22 @@
     const shared = files["xl/sharedStrings.xml"]
       ? byTag(xml(files["xl/sharedStrings.xml"]), "si").map((si) => byTag(si, "t").map((t) => t.textContent).join(""))
       : [];
-    let sheetPath = "xl/worksheets/sheet1.xml";
+    // sheet name -> path
+    const sheets = [];
     if (files["xl/workbook.xml"] && files["xl/_rels/workbook.xml.rels"]) {
-      const first = byTag(xml(files["xl/workbook.xml"]), "sheet")[0];
-      const rid = first && (first.getAttribute("r:id") || first.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id"));
-      const rel = byTag(xml(files["xl/_rels/workbook.xml.rels"]), "Relationship").find((r) => r.getAttribute("Id") === rid);
-      if (rel) { const t = rel.getAttribute("Target").replace(/^\//, ""); sheetPath = t.startsWith("xl/") ? t : "xl/" + t; }
+      const rels = byTag(xml(files["xl/_rels/workbook.xml.rels"]), "Relationship");
+      for (const sh of byTag(xml(files["xl/workbook.xml"]), "sheet")) {
+        const rid = sh.getAttribute("r:id") || sh.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+        const rel = rels.find((r) => r.getAttribute("Id") === rid);
+        if (!rel) continue;
+        const t = rel.getAttribute("Target").replace(/^\//, "");
+        sheets.push({ name: sh.getAttribute("name") || "", path: t.startsWith("xl/") ? t : "xl/" + t });
+      }
     }
-    if (!files[sheetPath]) throw new Error("Couldn't find a sheet in that file");
-    const rows = byTag(xml(files[sheetPath]), "row").map((row) => {
+    if (!sheets.length) sheets.push({ name: "", path: "xl/worksheets/sheet1.xml" });
+    const svcSheet = sheets.find((x) => x.name.trim().toLowerCase() === "service");
+    const fuelSheet = sheets.find((x) => x !== svcSheet);
+    const cellsOf = (path) => (files[path] ? byTag(xml(files[path]), "row").map((row) => {
       const out = {};
       for (const c of byTag(row, "c")) {
         const col = (c.getAttribute("r") || "").replace(/\d+/g, ""), t = c.getAttribute("t");
@@ -228,18 +268,39 @@
         else if (v != null) out[col] = Number(v);
       }
       return out;
-    });
-    if (!rows.length) return [];
-    const head = {};
-    for (const [col, h] of Object.entries(rows[0])) head[String(h).trim().toLowerCase()] = col;
-    const get = (r, ...names) => { for (const n of names) if (head[n] && r[head[n]] != null && r[head[n]] !== "") return r[head[n]]; return null; };
+    }) : []);
+    const getter = (rows) => {
+      const head = {};
+      for (const [col, h] of Object.entries(rows[0] || {})) head[String(h).trim().toLowerCase()] = col;
+      return (r, ...names) => { for (const n of names) if (head[n] && r[head[n]] != null && r[head[n]] !== "") return r[head[n]]; return null; };
+    };
+    const toISO = (d) => {
+      if (d == null) return null;
+      if (typeof d === "number") return new Date(Date.UTC(1899, 11, 30) + Math.round(d) * 864e5).toISOString().slice(0, 10);
+      d = String(d).trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+      const p = new Date(d); return isNaN(p) ? null : p.toISOString().slice(0, 10);
+    };
     const num = (v) => { if (v == null || v === "") return null; if (typeof v === "number") return v; const x = parseFloat(String(v).replace(/[,$]/g, "")); return Number.isFinite(x) && /^\s*\$?\d[\d,]*(\.\d+)?\s*$/.test(String(v)) ? x : null; };
+    const str = (v) => (v == null ? null : String(v).trim() || null);
+
+    const services = [];
+    if (svcSheet) {
+      const sRows = cellsOf(svcSheet.path), g = getter(sRows);
+      for (const r of sRows.slice(1)) {
+        const d = toISO(g(r, "date"));
+        if (!d) continue;
+        services.push({ date: d, odometer: num(g(r, "odometer", "cum miles")), category: str(g(r, "service", "category")),
+          cost: num(g(r, "cost", "total $")), shop: str(g(r, "shop")), notes: str(g(r, "notes")) });
+      }
+    }
+    const rows = fuelSheet ? cellsOf(fuelSheet.path) : [];
+    if (!fuelSheet || !files[fuelSheet.path]) { if (!svcSheet) throw new Error("Couldn't find a sheet in that file"); }
+    const get = getter(rows);
     const out = [];
     for (const r of rows.slice(1)) {
-      let d = get(r, "date");
-      if (d == null) continue;
-      if (typeof d === "number") d = new Date(Date.UTC(1899, 11, 30) + Math.round(d) * 864e5).toISOString().slice(0, 10);
-      else { d = String(d).trim().slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { const p = new Date(d); if (isNaN(p)) continue; d = p.toISOString().slice(0, 10); } }
+      const d = toISO(get(r, "date"));
+      if (!d) continue;
       let notes = get(r, "notes"); notes = notes != null ? String(notes).trim() : null;
       const galRaw = get(r, "gallons"), gal = num(galRaw);
       if (gal == null && galRaw != null) { const extra = `Gallons recorded as '${galRaw}'`; notes = notes ? `${notes}. ${extra}` : extra; }
@@ -248,7 +309,7 @@
       if (typeof t === "number") mins = Math.round(t * 1440);
       else if (t != null) { const m = String(t).match(/^(\d+):(\d{2})/); if (m) mins = +m[1] * 60 + +m[2]; }
       const oct = num(get(r, "fuel"));
-      const s = (v) => (v == null ? null : String(v).trim() || null);
+      const s = str;
       out.push({
         date: d, dash_mpg: num(get(r, "mpg")), gallons: gal, drive_minutes: mins, trip_miles: num(get(r, "miles")),
         octane: oct ? Math.round(oct) : null, drive_mode: s(get(r, "drive mode")), odometer: num(get(r, "cum miles", "odometer")),
@@ -256,7 +317,7 @@
         tags: s(get(r, "tags")), notes,
       });
     }
-    return out;
+    return { fillups: out, services };
   }
 
   window.MPGStore = { cfg, LOCAL, settings, xlsx: { write: writeXlsx, read: readXlsx }, ...(LOCAL ? local : server) };

@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
@@ -38,6 +38,11 @@ FIELDS = {  # column -> type
     "price_per_gal": float, "total_cost": float, "station": str,
     "tags": str, "notes": str,
 }
+SERVICE_FIELDS = {  # maintenance records
+    "date": str, "odometer": float, "category": str, "cost": float,
+    "shop": str, "notes": str,
+}
+TABLES = {"fillups": FIELDS, "services": SERVICE_FIELDS}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS fillups (
@@ -50,6 +55,14 @@ CREATE TABLE IF NOT EXISTS fillups (
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS fillups_date ON fillups(date);
+CREATE TABLE IF NOT EXISTS services (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  odometer REAL, category TEXT, cost REAL, shop TEXT, notes TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS services_date ON services(date);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 _lock = threading.Lock()
@@ -68,10 +81,10 @@ def now():
     return dt.datetime.now().isoformat(timespec="seconds")
 
 
-def clean(payload):
+def clean(payload, fields=FIELDS):
     """Coerce an incoming JSON object to known columns; '' -> NULL."""
     out = {}
-    for k, typ in FIELDS.items():
+    for k, typ in fields.items():
         if k not in payload:
             continue
         v = payload[k]
@@ -91,9 +104,23 @@ def clean(payload):
     return out
 
 
-def rows(con):
+def rows(con, table="fillups"):
+    assert table in TABLES
     return [dict(r) for r in con.execute(
-        "SELECT * FROM fillups ORDER BY date, COALESCE(odometer, 0), id")]
+        f"SELECT * FROM {table} ORDER BY date, COALESCE(odometer, 0), id")]
+
+
+def get_settings(con):
+    out = {}
+    for k, v in con.execute("SELECT key, value FROM settings"):
+        try:
+            out[k] = json.loads(v)
+        except ValueError:
+            pass
+    return out
+
+
+SETTING_KEYS = {"intervals"}  # intervals: {category: miles or null}
 
 
 # ---------------------------------------------------------------- Excel
@@ -104,18 +131,26 @@ EXPORT_COLS = [
 ]
 
 
-def export_xlsx(data):
-    from openpyxl import Workbook
+SERVICE_COLS = [("Date", 12), ("Odometer", 11), ("Service", 18), ("Cost", 10),
+                ("Shop", 20), ("Notes", 48)]
+
+
+def _header(ws, cols):
     from openpyxl.styles import Font, PatternFill
-    wb = Workbook()
-    ws = wb.active
-    ws.title = VEHICLE
-    ws.append([c for c, _ in EXPORT_COLS])
-    for i, (_, w) in enumerate(EXPORT_COLS, start=1):
+    ws.append([c for c, _ in cols])
+    for i, (_, w) in enumerate(cols, start=1):
         ws.column_dimensions[ws.cell(1, i).column_letter].width = w
         ws.cell(1, i).font = Font(bold=True, color="FFFFFF")
         ws.cell(1, i).fill = PatternFill("solid", fgColor="2B2A27")
     ws.freeze_panes = "A2"
+
+
+def export_xlsx(data, services=()):
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = re.sub(r"[\\/?*\[\]:]", " ", VEHICLE)[:31] or "Fuel"
+    _header(ws, EXPORT_COLS)
     for r in data:
         calc = (round(r["trip_miles"] / r["gallons"], 2)
                 if r["trip_miles"] and r["gallons"] else None)
@@ -130,6 +165,13 @@ def export_xlsx(data):
         ws.cell(n, 5).number_format = "[h]:mm"
         ws.cell(n, 10).number_format = '"$"0.000'
         ws.cell(n, 11).number_format = '"$"0.00'
+    sv = wb.create_sheet("Service")
+    _header(sv, SERVICE_COLS)
+    for r in services:
+        sv.append([dt.date.fromisoformat(r["date"]), r["odometer"], r["category"], r["cost"],
+                   r["shop"], r["notes"]])
+        sv.cell(sv.max_row, 1).number_format = "yyyy-mm-dd"
+        sv.cell(sv.max_row, 4).number_format = '"$"0.00'
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -146,44 +188,72 @@ def _num(v):
         return None
 
 
-def import_xlsx(blob):
-    """Parse a sheet with the original headers (Date, MPG, Gallons, Time, Miles,
-    Fuel, Drive Mode, Cum Miles, Notes) or this app's export. Returns entries."""
-    from openpyxl import load_workbook
-    ws = load_workbook(io.BytesIO(blob), data_only=True).worksheets[0]
+def _to_date(d):
+    if isinstance(d, dt.datetime):
+        return d.date()
+    if isinstance(d, dt.date):
+        return d
+    if isinstance(d, (int, float)):
+        return dt.date(1899, 12, 30) + dt.timedelta(days=int(d))
+    if isinstance(d, str):
+        try:
+            return dt.date.fromisoformat(d.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _sheet_rows(ws):
     it = ws.iter_rows(values_only=True)
-    head = [str(h).strip().lower() if h is not None else "" for h in next(it)]
+    try:
+        head = [str(h).strip().lower() if h is not None else "" for h in next(it)]
+    except StopIteration:
+        return
     col = {h: i for i, h in enumerate(head)}
 
     def get(row, *names):
         for n in names:
-            if n in col and col[n] < len(row):
+            if n in col and col[n] < len(row) and row[col[n]] not in (None, ""):
                 return row[col[n]]
         return None
-
-    out = []
     for row in it:
-        d = get(row, "date")
+        yield lambda *names, row=row: get(row, *names)
+
+
+def import_xlsx(blob):
+    """Parse the fuel sheet (original headers Date, MPG, Gallons, Time, Miles,
+    Fuel, Drive Mode, Cum Miles, Notes, or this app's export) and an optional
+    "Service" sheet. Returns (fillups, services)."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(blob), data_only=True)
+    svc_ws = next((w for w in wb.worksheets if w.title.strip().lower() == "service"), None)
+    fuel_ws = next((w for w in wb.worksheets if w is not svc_ws), None)
+    services = []
+    if svc_ws is not None:
+        for get in _sheet_rows(svc_ws):
+            d = _to_date(get("date"))
+            if d is None:
+                continue
+            services.append({
+                "date": d.isoformat(), "odometer": _num(get("odometer", "cum miles")),
+                "category": (str(get("service", "category")).strip() if get("service", "category") else None),
+                "cost": _num(get("cost", "total $")), "shop": get("shop") or None,
+                "notes": (str(get("notes")).strip() if get("notes") else None),
+            })
+    out = []
+    for get in (_sheet_rows(fuel_ws) if fuel_ws is not None else []):
+        d = _to_date(get("date"))
         if d is None:
             continue
-        if isinstance(d, dt.datetime):
-            d = d.date()
-        elif isinstance(d, (int, float)):
-            d = dt.date(1899, 12, 30) + dt.timedelta(days=int(d))
-        elif isinstance(d, str):
-            try:
-                d = dt.date.fromisoformat(d.strip()[:10])
-            except ValueError:
-                continue
-        notes = get(row, "notes")
+        notes = get("notes")
         notes = str(notes).strip() if notes else None
-        gal_raw = get(row, "gallons")
+        gal_raw = get("gallons")
         gal = _num(gal_raw)
         if gal is None and gal_raw not in (None, ""):
             # e.g. "28..." in the original sheet: keep what was written
             extra = f"Gallons recorded as '{gal_raw}'"
             notes = f"{notes}. {extra}" if notes else extra
-        t = get(row, "time")
+        t = get("time")
         if isinstance(t, dt.time):
             mins = t.hour * 60 + t.minute
         elif isinstance(t, dt.timedelta):
@@ -192,34 +262,34 @@ def import_xlsx(blob):
             mins = round(float(t) * 1440)
         else:
             mins = None
-        oct_ = _num(get(row, "fuel"))
+        oct_ = _num(get("fuel"))
         out.append({
             "date": d.isoformat(),
-            "dash_mpg": _num(get(row, "mpg")),
+            "dash_mpg": _num(get("mpg")),
             "gallons": gal,
             "drive_minutes": mins,
-            "trip_miles": _num(get(row, "miles")),
+            "trip_miles": _num(get("miles")),
             "octane": int(oct_) if oct_ else None,
-            "drive_mode": (str(get(row, "drive mode")).strip()
-                           if get(row, "drive mode") else None),
-            "odometer": _num(get(row, "cum miles", "odometer")),
-            "price_per_gal": _num(get(row, "price/gal")),
-            "total_cost": _num(get(row, "total $")),
-            "station": get(row, "station") or None,
-            "tags": get(row, "tags") or None,
+            "drive_mode": (str(get("drive mode")).strip()
+                           if get("drive mode") else None),
+            "odometer": _num(get("cum miles", "odometer")),
+            "price_per_gal": _num(get("price/gal")),
+            "total_cost": _num(get("total $")),
+            "station": get("station") or None,
+            "tags": get("tags") or None,
             "notes": notes,
         })
-    return out
+    return out, services
 
 
-def insert(con, entry):
-    e = clean(entry)
+def insert(con, entry, table="fillups"):
+    e = clean(entry, TABLES[table])
     if not e.get("date"):
         raise ValueError("date is required")
     e["created_at"] = e["updated_at"] = now()
     keys = list(e)
     cur = con.execute(
-        f"INSERT INTO fillups ({','.join(keys)}) VALUES ({','.join('?' * len(keys))})",
+        f"INSERT INTO {table} ({','.join(keys)}) VALUES ({','.join('?' * len(keys))})",
         [e[k] for k in keys])
     return cur.lastrowid
 
@@ -242,7 +312,8 @@ def backup(reason):
             dst = sqlite3.connect(local)
             with dst:
                 src.backup(dst)
-            data = [dict(r) for r in _rows_raw(src)]
+            src.row_factory = sqlite3.Row
+            data, svcs = rows(src), rows(src, "services")
             src.close()
             dst.close()
             shutil.copyfile(local, snap + ".tmp")
@@ -250,7 +321,7 @@ def backup(reason):
             os.remove(local)
             xlsx = os.path.join(BACKUP_DIR, f"{VEHICLE}_MPG.xlsx")
             with open(xlsx + ".tmp", "wb") as f:
-                f.write(export_xlsx(data))
+                f.write(export_xlsx(data, svcs))
             os.replace(xlsx + ".tmp", xlsx)
             snaps = sorted(n for n in os.listdir(hist) if n.endswith(".sqlite"))
             for old in snaps[:-BACKUP_KEEP]:
@@ -258,11 +329,6 @@ def backup(reason):
             print(f"backup ok ({reason}): {snap}", flush=True)
         except Exception as exc:
             print(f"backup FAILED ({reason}): {exc}", file=sys.stderr, flush=True)
-
-
-def _rows_raw(con):
-    con.row_factory = sqlite3.Row
-    return con.execute("SELECT * FROM fillups ORDER BY date, COALESCE(odometer, 0), id").fetchall()
 
 
 def backup_async(reason):
@@ -285,6 +351,19 @@ Read only values that are clearly visible, exactly as displayed:
 Use null for anything not present or not readable. Reply with JSON only."""
 
 
+SERVICE_CATEGORIES = ["Oil change", "Tire rotation", "Brakes", "Tires", "Battery", "Air filter",
+                      "Cabin filter", "Alignment", "Coolant", "Transmission", "Spark plugs",
+                      "Wipers", "Repair"]
+SERVICE_PROMPT = """This photo is a vehicle service or repair receipt / invoice. Read only what is clearly visible:
+- date: the service date as YYYY-MM-DD
+- shop: the business name
+- odometer: the vehicle mileage / odometer in reading listed on the receipt
+- total: the final total amount paid in dollars
+- service: the main service performed, one of: """ + ", ".join(SERVICE_CATEGORIES) + """ (or null)
+- summary: a short plain description of the work (under 12 words)
+Use null for anything not present or not readable. Reply with JSON only."""
+
+
 def _f(v):
     if v is None:
         return None
@@ -292,18 +371,43 @@ def _f(v):
     return float(m.group(0).replace(",", "")) if m else None
 
 
-def scan_photo(jpeg):
+def _vision(jpeg, prompt):
     import base64
     import urllib.request
     body = {"model": VISION_MODEL, "stream": False, "format": "json", "think": False,
             "keep_alive": "3m",  # free VRAM soon if the GPU is shared
             "options": {"temperature": 0, "num_ctx": 8192},
-            "messages": [{"role": "user", "content": SCAN_PROMPT,
+            "messages": [{"role": "user", "content": prompt,
                           "images": [base64.b64encode(jpeg).decode()]}]}
     req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=240) as r:
-        raw = json.loads(json.load(r)["message"]["content"])
+        return json.loads(json.load(r)["message"]["content"])
+
+
+def scan_service(jpeg):
+    raw = _vision(jpeg, SERVICE_PROMPT)
+    out = {"kind": "service", "raw": raw}
+    d = raw.get("date")
+    if d and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)):
+        out["date"] = str(d)
+    odo = _f(raw.get("odometer"))
+    if odo is not None and 1 <= odo <= 2_000_000:
+        out["odometer"] = odo
+    cost = _f(raw.get("total"))
+    if cost is not None and 0 < cost < 20000:
+        out["cost"] = cost
+    if raw.get("shop"):
+        out["shop"] = str(raw["shop"]).strip()[:80]
+    cat = str(raw.get("service") or "").strip().lower()
+    out["category"] = next((c for c in SERVICE_CATEGORIES if c.lower() == cat), None)
+    if raw.get("summary"):
+        out["notes"] = str(raw["summary"]).strip()[:200]
+    return out
+
+
+def scan_photo(jpeg):
+    raw = _vision(jpeg, SCAN_PROMPT)
     out = {"kind": raw.get("kind")}
     rng = {"dash_mpg": ("trip_mpg", 3, 60), "trip_miles": ("trip_miles", 0, 1500),
            "odometer": ("odometer", 1, 2_000_000), "miles_to_empty": ("miles_to_empty", 0, 1500),
@@ -392,10 +496,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/fillups":
             with db() as con:
-                return self._send(200, {"vehicle": VEHICLE, "fillups": rows(con)})
+                return self._send(200, {"vehicle": VEHICLE, "fillups": rows(con),
+                                        "services": rows(con, "services"),
+                                        "settings": get_settings(con)})
         if path == "/api/export.xlsx":
             with db() as con:
-                blob = export_xlsx(rows(con))
+                blob = export_xlsx(rows(con), rows(con, "services"))
             name = f"{VEHICLE}_MPG_{dt.date.today().isoformat()}.xlsx"
             return self._send(200, blob,
                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -426,13 +532,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         try:
-            if path == "/api/fillups":
+            if path in ("/api/fillups", "/api/services"):
+                table = path.rsplit("/", 1)[1]
                 entry = json.loads(self._body() or b"{}")
                 with _lock, db() as con:
-                    new_id = insert(con, entry)
-                    row = dict(con.execute("SELECT * FROM fillups WHERE id=?",
+                    new_id = insert(con, entry, table)
+                    row = dict(con.execute(f"SELECT * FROM {table} WHERE id=?",
                                            (new_id,)).fetchone())
-                backup_async(f"new fill-up {row['date']}")
+                what = "fill-up" if table == "fillups" else f"service ({row.get('category')})"
+                backup_async(f"new {what} {row['date']}")
                 return self._send(201, row)
             if path == "/api/scan":
                 if not OLLAMA_URL:
@@ -440,39 +548,64 @@ class Handler(BaseHTTPRequestHandler):
                 blob = self._body(limit=15 * 1024 * 1024)
                 if not blob:
                     return self._send(400, {"error": "no image"})
+                mode = parse_qs(urlparse(self.path).query).get("mode", [""])[0]
                 try:
-                    return self._send(200, scan_photo(blob))
+                    return self._send(200, scan_service(blob) if mode == "service" else scan_photo(blob))
                 except OSError as exc:
                     return self._send(502, {"error": f"vision model unavailable: {exc}"})
             if path == "/api/import":
-                entries = import_xlsx(self._body())
+                entries, services = import_xlsx(self._body())
                 with _lock, db() as con:
                     have = {(r["date"], r["odometer"], r["trip_miles"]) for r in rows(con)}
                     added = 0
                     for e in entries:
                         if (e["date"], e["odometer"], e["trip_miles"]) in have:
                             continue
+                        have.add((e["date"], e["odometer"], e["trip_miles"]))
                         insert(con, e)
                         added += 1
-                return self._send(200, {"added": added, "skipped": len(entries) - added})
+                    have_s = {(r["date"], r["category"], r["odometer"]) for r in rows(con, "services")}
+                    added_s = 0
+                    for e in services:
+                        if (e["date"], e["category"], e["odometer"]) in have_s:
+                            continue
+                        have_s.add((e["date"], e["category"], e["odometer"]))
+                        insert(con, e, "services")
+                        added_s += 1
+                total = len(entries) + len(services)
+                return self._send(200, {"added": added + added_s, "services_added": added_s,
+                                        "skipped": total - added - added_s})
         except (ValueError, json.JSONDecodeError) as exc:
             return self._send(400, {"error": str(exc)})
         except Exception as exc:  # bad xlsx etc.
             return self._send(400, {"error": f"could not read file: {exc}"})
         self._send(404, {"error": "not found"})
 
-    def _id(self):
-        m = re.fullmatch(r"/api/fillups/(\d+)", urlparse(self.path).path)
-        return int(m.group(1)) if m else None
+    def _target(self):
+        m = re.fullmatch(r"/api/(fillups|services)/(\d+)", urlparse(self.path).path)
+        return (m.group(1), int(m.group(2))) if m else (None, None)
 
     def do_PUT(self):
         if not (self._guard() and self._csrf()):
             return
-        fid = self._id()
+        path = urlparse(self.path).path
+        if path == "/api/settings":
+            try:
+                body = json.loads(self._body() or b"{}")
+            except json.JSONDecodeError as exc:
+                return self._send(400, {"error": str(exc)})
+            with _lock, db() as con:
+                for k, v in body.items():
+                    if k in SETTING_KEYS:
+                        con.execute("INSERT INTO settings(key, value) VALUES(?, ?) "
+                                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                    (k, json.dumps(v)))
+                return self._send(200, get_settings(con))
+        table, fid = self._target()
         if fid is None:
             return self._send(404, {"error": "not found"})
         try:
-            e = clean(json.loads(self._body() or b"{}"))
+            e = clean(json.loads(self._body() or b"{}"), TABLES[table])
         except (ValueError, json.JSONDecodeError) as exc:
             return self._send(400, {"error": str(exc)})
         if not e:
@@ -480,30 +613,34 @@ class Handler(BaseHTTPRequestHandler):
         e["updated_at"] = now()
         with _lock, db() as con:
             cur = con.execute(
-                f"UPDATE fillups SET {','.join(k + '=?' for k in e)} WHERE id=?",
+                f"UPDATE {table} SET {','.join(k + '=?' for k in e)} WHERE id=?",
                 [*e.values(), fid])
             if not cur.rowcount:
                 return self._send(404, {"error": "not found"})
-            row = dict(con.execute("SELECT * FROM fillups WHERE id=?", (fid,)).fetchone())
+            row = dict(con.execute(f"SELECT * FROM {table} WHERE id=?", (fid,)).fetchone())
         self._send(200, row)
 
     def do_DELETE(self):
         if not (self._guard() and self._csrf()):
             return
-        fid = self._id()
+        table, fid = self._target()
+        if fid is None:
+            return self._send(404, {"error": "not found"})
         with _lock, db() as con:
-            cur = con.execute("DELETE FROM fillups WHERE id=?", (fid,))
+            cur = con.execute(f"DELETE FROM {table} WHERE id=?", (fid,))
         self._send(200 if cur.rowcount else 404, {"deleted": cur.rowcount})
 
 
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "import":
         with open(sys.argv[2], "rb") as f:
-            entries = import_xlsx(f.read())
+            entries, services = import_xlsx(f.read())
         with db() as con:
             for e in entries:
                 insert(con, e)
-        print(f"imported {len(entries)} fill-ups into {DB_PATH}")
+            for e in services:
+                insert(con, e, "services")
+        print(f"imported {len(entries)} fill-ups and {len(services)} services into {DB_PATH}")
         return
     db().close()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

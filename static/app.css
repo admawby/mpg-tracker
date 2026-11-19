@@ -356,7 +356,7 @@ figcaption { display: flex; justify-content: space-between; align-items: center;
 /* ---------- tab bar */
 .tabbar {
   position: fixed; left: 50%; bottom: calc(12px + var(--safe-b)); transform: translateX(-50%); z-index: 20;
-  display: grid; grid-template-columns: repeat(3, 1fr); width: min(360px, calc(100% - 32px));
+  display: grid; grid-template-columns: repeat(4, 1fr); width: min(400px, calc(100% - 24px));
   padding: 6px; border-radius: var(--pill); background: var(--glass); border: 1px solid var(--line);
   -webkit-backdrop-filter: blur(16px) saturate(1.3); backdrop-filter: blur(16px) saturate(1.3);
   box-shadow: 0 12px 32px rgba(0,0,0,.45);
@@ -371,7 +371,7 @@ figcaption { display: flex; justify-content: space-between; align-items: center;
 .tab[aria-current="page"] svg { transform: translateY(-1px) scale(1.08); }
 .tab:active { transform: scale(.92); }
 .tab-pill {
-  position: absolute; z-index: 0; top: 6px; bottom: 6px; left: 6px; width: calc((100% - 12px) / 3);
+  position: absolute; z-index: 0; top: 6px; bottom: 6px; left: 6px; width: calc((100% - 12px) / 4);
   border-radius: var(--pill); background: var(--accent); transition: transform .5s var(--ease-spring);
 }
 
@@ -459,3 +459,46 @@ input.is-photo { border-color: rgba(var(--accent-rgb), .7); animation: photo-in 
 .pal .sw { width: 32px; height: 32px; border-radius: 50%; display: block; position: relative; overflow: hidden; border: 1px solid rgba(128,128,128,.35); transition: transform .45s var(--ease-spring); }
 .pal[aria-checked="true"] .sw { transform: rotate(-45deg) scale(1.08); }
 .pal .sw i { position: absolute; inset: 0 0 0 50%; display: block; }
+
+/* ---------- service */
+.est-line { font-family: var(--mono); font-size: 13px; margin: -8px 0 16px; }
+.due-list { display: grid; gap: 8px; }
+.due {
+  width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: baseline;
+  padding: 16px; border-radius: var(--r); border: 1px solid var(--line); background: var(--s1); color: var(--text); font: inherit; cursor: pointer;
+  transition: transform .35s var(--ease-spring), border-color .2s;
+}
+.due:active { transform: scale(.985); }
+.due b { font: 650 16px/1.2 var(--sans); }
+.due .when { font: 600 14px/1.2 var(--mono); text-align: right; }
+.due .last { grid-column: 1 / -1; font: 500 12px/1.4 var(--mono); color: var(--muted); }
+.due .bar { grid-column: 1 / -1; height: 6px; border-radius: 6px; background: var(--s2); overflow: hidden; margin-top: 6px; }
+.due .bar i { display: block; height: 100%; border-radius: 6px; background: var(--good); transform-origin: left; animation: grow .9s var(--ease-out) both; }
+.due.soon { border-color: rgba(var(--accent-rgb), .6); }
+.due.soon .bar i { background: var(--accent); }
+.due.soon .when { color: var(--accent); }
+.due.over { border-color: rgba(var(--bad-rgb), .6); }
+.due.over .bar i { background: var(--bad); }
+.due.over .when { color: var(--bad); }
+.due-none { font-size: 13px; color: var(--muted); padding: 4px 2px; }
+.svc-form { display: grid; gap: 16px; margin: 16px 0; }
+.svc-form h2 { margin: 0; }
+#svc-tiles { margin: 16px 0 0; }
+.svc-entry { grid-template-columns: 64px 1fr auto; }
+.svc-entry .e-mpg { font-size: 20px; }
+.intervals { display: grid; gap: 8px; }
+.int-row { display: grid; grid-template-columns: 1fr 120px; align-items: center; gap: 12px; }
+.int-row span { font-size: 15px; color: var(--text-2); }
+.int-row input { min-height: 40px; padding: 8px 12px; text-align: right; }
+.due-banner {
+  width: 100%; margin-top: 16px; display: flex; align-items: center; gap: 12px; text-align: left;
+  padding: 12px 16px; border-radius: var(--r); font: 600 14px/1.35 var(--sans); cursor: pointer; color: var(--text);
+  background: var(--accent-soft); border: 1px solid rgba(var(--accent-rgb), .55);
+  transition: transform .35s var(--ease-spring);
+}
+.due-banner.over { background: rgba(var(--bad-rgb), .12); border-color: rgba(var(--bad-rgb), .55); }
+.due-banner:active { transform: scale(.985); }
+.due-banner svg { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.chart .svc-mark { fill: var(--text-2); }
+.k-svc { margin-left: 8px; font-size: 10px; color: var(--text-2); }
+.view-head .btn.primary { flex: none; }

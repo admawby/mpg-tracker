@@ -51,6 +51,7 @@
       <p><b>Your fill-ups are stored on this phone only.</b> Add this page to your Home Screen (Share → Add to Home Screen) so Safari's cleanup can't erase them, and use Export now and then to keep a copy in Files.</p>
       <button type="button" class="btn small ghost" id="tip-close">Got it</button>
     </aside>
+    <button type="button" class="due-banner" id="due-banner" hidden></button>
     <div class="view-head">
       <h1 id="log-title">New fill-up</h1>
       <p class="muted" id="last-line"></p>
@@ -166,6 +167,73 @@
     <div id="hist-list"></div>
   </section>
 
+  <!-- SERVICE -->
+  <section class="view" id="view-service" aria-labelledby="svc-title" hidden>
+    <div class="view-head row">
+      <h1 id="svc-title">Service</h1>
+      <button type="button" class="btn small primary" id="svc-add"><span>+ Add service</span></button>
+    </div>
+    <p class="muted est-line" id="svc-est"></p>
+    <div class="due-list" id="due"></div>
+
+    <form id="svc-form" class="card svc-form" novalidate autocomplete="off" hidden>
+      <h2 id="svc-form-title">New service</h2>
+      <div class="scan" id="svc-scan">
+        <label class="scan-btn">
+          <input type="file" id="svc-scan-file" accept="image/*">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V6a2 2 0 0 1 2-2h2M17 4h2a2 2 0 0 1 2 2v2M21 16v2a2 2 0 0 1-2 2h-2M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg>
+          <span class="scan-text"><b id="svc-scan-title">Scan a receipt</b><span id="svc-scan-sub">Fills in date, shop, cost and mileage</span></span>
+        </label>
+        <img class="scan-thumb" id="svc-scan-thumb" alt="" hidden>
+      </div>
+      <div class="grid2">
+        <label class="field">
+          <span class="lbl">Date</span>
+          <input type="date" name="date" required>
+        </label>
+        <label class="field">
+          <span class="lbl">Odometer <span class="hint" id="svc-odo-hint"></span></span>
+          <input name="odometer" inputmode="decimal">
+        </label>
+      </div>
+      <div class="field">
+        <span class="lbl" id="svc-cat-lbl">Service</span>
+        <div class="chips" role="radiogroup" aria-labelledby="svc-cat-lbl" id="svc-cats"></div>
+        <input name="category_other" class="other" placeholder="What was done?" hidden>
+      </div>
+      <div class="grid2">
+        <label class="field">
+          <span class="lbl">Cost $</span>
+          <input name="cost" inputmode="decimal">
+        </label>
+        <label class="field">
+          <span class="lbl">Shop</span>
+          <input name="shop" list="shop-list" autocapitalize="words">
+        </label>
+      </div>
+      <datalist id="shop-list"></datalist>
+      <label class="field">
+        <span class="lbl">Notes</span>
+        <textarea name="notes" rows="2" placeholder="Parts, warranty, anything worth remembering"></textarea>
+      </label>
+      <p class="err" id="svc-err" role="alert"></p>
+      <div class="actions">
+        <button type="submit" class="btn primary" id="svc-save"><span>Save service</span></button>
+        <button type="button" class="btn ghost" id="svc-cancel">Cancel</button>
+        <button type="button" class="btn danger" id="svc-delete" hidden>Delete</button>
+      </div>
+    </form>
+
+    <div class="tiles" id="svc-tiles"></div>
+    <div id="svc-list"></div>
+
+    <section class="card" aria-labelledby="int-title">
+      <h2 id="int-title">Reminder intervals</h2>
+      <p class="muted">Miles between services. Leave blank for no reminder. Current mileage is estimated from your last odometer reading and recent miles per day.</p>
+      <div class="intervals" id="intervals"></div>
+    </section>
+  </section>
+
   <!-- STATS -->
   <section class="view" id="view-stats" aria-labelledby="stats-title" hidden>
     <div class="view-head row">
@@ -180,6 +248,7 @@
         <span class="legend" aria-hidden="true">
           <span class="key k-line"></span>Dash
           <span class="key k-avg"></span>5-tank avg
+          <span class="k-svc">▲</span>Service
         </span>
       </figcaption>
       <div class="chart" id="chart"></div>
@@ -229,6 +298,10 @@
   <button type="button" class="tab" data-view="history">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
     <span>History</span>
+  </button>
+  <button type="button" class="tab" data-view="service">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.1L3.6 17.1a1.9 1.9 0 0 0 2.7 2.7l5.7-5.7a4 4 0 0 0 5.1-5.4l-2.5 2.5-2.3-.4-.4-2.3z"/></svg>
+    <span>Service</span>
   </button>
   <button type="button" class="tab" data-view="stats">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
