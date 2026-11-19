@@ -1,5 +1,5 @@
 // Network-first; cached copy when offline. Bump VERSION on UI changes.
-const VERSION = "mpg-v7";
+const VERSION = "mpg-v8";
 const SHELL = ["./", "app.css", "app.js", "store.js", "config.js", "manifest.webmanifest", "icon.svg", "icon-180.png", "fonts/archivo.woff2", "fonts/jbmono.woff2"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {

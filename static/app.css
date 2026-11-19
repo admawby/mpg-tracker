@@ -502,3 +502,8 @@ input.is-photo { border-color: rgba(var(--accent-rgb), .7); animation: photo-in 
 .chart .svc-mark { fill: var(--text-2); }
 .k-svc { margin-left: 8px; font-size: 10px; color: var(--text-2); }
 .view-head .btn.primary { flex: none; }
+/* iOS 26 blurs and fades content just under the status bar in home-screen
+   apps; start the header below that band. */
+@media (display-mode: standalone) {
+  .top { padding-top: calc(var(--safe-t) + 36px); }
+}
