@@ -169,7 +169,8 @@
     $('meta[name="theme-color"]').setAttribute("content", p.bg);
     if (save) localStorage.setItem("mpg-theme", p.id);
     $$("#palettes .pal").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.id === p.id)));
-    if (save && !$("#view-stats").hidden) renderChart(inRange().filter((r) => r.dash_mpg)); // gradient takes the new accent
+    if (save && !$("#view-stats").hidden) smallChart(); // gradient takes the new accent
+    if (save && fullOpen) renderFull();
   }
   $("#palettes").replaceChildren(...PALETTES.map((p) => h("button", {
     type: "button", class: "pal", role: "radio", "data-id": p.id, "aria-checked": "false",
@@ -642,23 +643,60 @@
     $("#modes").replaceChildren(
       h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Mode / tag"), h("th", { scope: "col" }, "Tanks"), h("th", { scope: "col" }, "Avg mpg"))),
       h("tbody", {}, ...groups.map((g) => h("tr", {}, h("td", {}, g.k), h("td", {}, String(g.rows.length)), h("td", {}, f(avgMpg(g.rows)))))));
-    renderChart(withMpg);
+    smallChart();
   }
 
-  function renderChart(rows) {
-    const box = $("#chart");
+  // Which maintenance types appear on the chart (hidden list, so new types show by default)
+  let chartHidden = new Set(JSON.parse(localStorage.getItem("mpg-chart-hide") || "[]"));
+  const svcKey = (sv) => sv.category || "Other";
+  const chartServices = () => services.filter((sv) => !chartHidden.has(svcKey(sv)));
+
+  function renderChart(rows, box = $("#chart"), opts = {}) {
+    const big = !!opts.big;
     box.replaceChildren();
     if (rows.length < 2) { box.append(h("p", { class: "empty" }, "Need two fill-ups for a chart.")); return; }
     const NS = "http://www.w3.org/2000/svg";
     const s = (tag, attrs = {}) => { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
-    const W = Math.max(280, box.clientWidth || 320), H = window.innerWidth >= 768 ? 280 : 220, pl = 28, pr = 8, pt = 8, pb = 22;
+    const W = Math.max(280, box.clientWidth || 320);
+    const H = big ? Math.max(240, box.clientHeight || 400) : window.innerWidth >= 768 ? 280 : 220;
     const t = rows.map((r) => toDate(r.date).getTime()), v = rows.map((r) => r.dash_mpg);
-    const avg = v.map((_, i) => { const w = v.slice(Math.max(0, i - 4), i + 1); return w.reduce((a, b) => a + b, 0) / w.length; });
     const t0 = t[0], t1 = t[t.length - 1];
+    const svcs = chartServices().filter((sv) => { const x = toDate(sv.date).getTime(); return x >= t0 && x <= t1; });
+    // big mode: lay service labels out in rows along the top so they don't collide
+    const pl = 28, pr = big ? 12 : 8, pb = 22;
+    const xOf = (x, ptX) => pl + ((x - t0) / (t1 - t0 || 1)) * (W - pl - pr);
+    const labels = [];
+    if (big) {
+      // group services that land within a few px of each other into one label
+      const groups = [];
+      for (const sv of svcs.slice().sort((p, q) => (p.date < q.date ? -1 : 1))) {
+        const x = xOf(toDate(sv.date).getTime()), g = groups[groups.length - 1];
+        if (g && x - g.x < 10) g.items.push(sv); else groups.push({ x, items: [sv] });
+      }
+      const rowsEnd = [];
+      for (const g of groups) {
+        const kinds = [...new Set(g.items.map(svcKey))];
+        const base = svKeyShort(g.items[0]);
+        const text = g.items.length === 1 ? base : kinds.length === 1 ? `${base} ×${g.items.length}` : `${base} +${g.items.length - 1}`;
+        const w = text.length * 6.4 + 10;
+        const left = Math.min(Math.max(g.x - 4, pl), W - pr - w);
+        let row = rowsEnd.findIndex((end) => end + 4 < left);
+        if (row === -1 && rowsEnd.length < 3) { row = rowsEnd.length; rowsEnd.push(-Infinity); }
+        if (row === -1) { labels.push({ x: g.x, row: null }); continue; }
+        rowsEnd[row] = left + w;
+        labels.push({ x: g.x, row, left, text });
+      }
+    }
+    const labelRows = labels.reduce((m, l) => (l.row != null ? Math.max(m, l.row + 1) : m), 0);
+    const pt = big ? 12 + labelRows * 18 : 8;
+    const avg = v.map((_, i) => { const w = v.slice(Math.max(0, i - 4), i + 1); return w.reduce((a, b) => a + b, 0) / w.length; });
     const y0 = Math.floor(Math.min(...v)) - 1, y1 = Math.ceil(Math.max(...v)) + 1;
-    const X = (x) => pl + ((x - t0) / (t1 - t0 || 1)) * (W - pl - pr), Y = (y) => pt + (1 - (y - y0) / (y1 - y0)) * (H - pt - pb);
-    const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `MPG per tank, ${rows.length} tanks from ${f(Math.min(...v))} to ${f(Math.max(...v))}, latest ${f(v[v.length - 1])}` });
-    const defs = s("defs"), lg = s("linearGradient", { id: "accentfade", x1: 0, y1: 0, x2: 0, y2: 1 });
+    const X = xOf, Y = (y) => pt + (1 - (y - y0) / (y1 - y0)) * (H - pt - pb);
+    const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", style: `height:${H}px`,
+      "aria-label": `MPG per tank, ${rows.length} tanks from ${f(Math.min(...v))} to ${f(Math.max(...v))}, latest ${f(v[v.length - 1])}` +
+        (svcs.length ? `. ${svcs.length} maintenance events shown.` : "") });
+    const gid = `fade-${box.id}`;
+    const defs = s("defs"), lg = s("linearGradient", { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
     const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#f5a524";
     lg.append(s("stop", { offset: "0", "stop-color": accent, "stop-opacity": ".22" }), s("stop", { offset: "1", "stop-color": accent, "stop-opacity": "0" }));
     defs.append(lg); svg.append(defs);
@@ -668,8 +706,9 @@
       grid.append(s("line", { x1: pl, x2: W - pr, y1: Y(y), y2: Y(y) }));
       const tx = s("text", { x: pl - 6, y: Y(y) + 3, "text-anchor": "end" }); tx.textContent = y; axis.append(tx);
     }
-    // x ticks: quarter starts (or months for short ranges)
-    const span = (t1 - t0) / 864e5, mStep = span > 500 ? 6 : span > 200 ? 3 : 1;
+    // x ticks: quarter starts (or months for short ranges); denser when there's room
+    const span = (t1 - t0) / 864e5, perMonth = (W - pl - pr) / Math.max(1, span / 30.4);
+    const mStep = perMonth > 44 ? 1 : perMonth > 22 ? 2 : perMonth > 14 ? 3 : 6;
     const d = new Date(t0); d.setDate(1); d.setMonth(d.getMonth() + 1);
     while (d.getTime() <= t1) {
       if (d.getMonth() % mStep === 0) {
@@ -680,24 +719,32 @@
       d.setMonth(d.getMonth() + 1);
     }
     svg.append(grid, axis);
+    // maintenance: full-height lines + labels when big, baseline ticks when small
+    const svcLayer = s("g", { class: "svc-layer" });
+    for (const sv of svcs) {
+      const x = X(toDate(sv.date).getTime()).toFixed(1);
+      if (big) svcLayer.append(s("line", { class: "svc-line", x1: x, x2: x, y1: pt - 2, y2: H - pb }));
+      svcLayer.append(s("path", { class: "svc-mark", d: `M${x},${(H - pb - 1).toFixed(1)} l-4,-7 h8 z` }));
+    }
+    for (const l of labels) {
+      if (l.row == null) continue;
+      const y = 4 + l.row * 18;
+      svcLayer.append(s("rect", { class: "svc-tag", x: l.left, y, width: l.text.length * 6.4 + 10, height: 15, rx: 4 }));
+      const tx = s("text", { class: "svc-label", x: l.left + 5, y: y + 11 }); tx.textContent = l.text; svcLayer.append(tx);
+    }
+    svg.append(svcLayer);
     const pts = t.map((x, i) => [X(x), Y(v[i])]);
     const path = "M" + pts.map((p) => p.map((n) => n.toFixed(1)).join(",")).join("L");
-    svg.append(s("path", { class: "area", d: `${path}L${pts[pts.length - 1][0]},${Y(y0)}L${pts[0][0]},${Y(y0)}Z` }));
+    svg.append(s("path", { class: "area", fill: `url(#${gid})`, d: `${path}L${pts[pts.length - 1][0]},${Y(y0)}L${pts[0][0]},${Y(y0)}Z` }));
     const avgPath = s("path", { class: "avg", d: "M" + t.map((x, i) => `${X(x).toFixed(1)},${Y(avg[i]).toFixed(1)}`).join("L") });
     const line = s("path", { class: "ln", d: path });
     svg.append(avgPath, line);
     const hair = s("line", { class: "hair", y1: pt, y2: H - pb, opacity: 0 });
     const dot = s("circle", { class: "dot", r: 5, cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] });
     const ring = s("circle", { class: "dot", r: 4, cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] });
-    // service events: small ticks on the baseline
-    for (const sv of services) {
-      const x = toDate(sv.date).getTime();
-      if (x < t0 || x > t1) continue;
-      const m = s("path", { class: "svc-mark", d: `M${X(x).toFixed(1)},${(H - pb - 1).toFixed(1)} l-4,-7 h8 z` });
-      svg.append(m);
-    }
     svg.append(hair, ring, dot);
-    const hit = s("rect", { x: 0, y: 0, width: W, height: H, fill: "transparent", tabindex: 0, "aria-label": "Chart: use arrow keys to read each tank" });
+    const hit = s("rect", { x: 0, y: 0, width: W, height: H, fill: "transparent", tabindex: 0,
+      "aria-label": big ? "Chart: use arrow keys to read each tank" : "Chart: arrow keys read each tank, Enter opens full screen" });
     svg.append(hit);
     box.append(svg);
     if (!reduced) { line.style.setProperty("--len", Math.ceil(line.getTotalLength())); line.classList.add("draw"); }
@@ -715,26 +762,98 @@
         h("div", { class: "row" }, h("i"), h("b", {}, f(r.dash_mpg)), " dash"),
         h("div", { class: "row" }, h("i", { class: "d" }), f(avg[cur]), " 5-tank avg"),
         r.notes ? h("div", { style: "max-width:200px;white-space:normal;color:var(--muted)" }, r.notes) : null,
-        ...services.filter((sv) => sv.date <= r.date && (cur === 0 || sv.date > rows[cur - 1].date))
-          .map((sv) => h("div", { style: "color:var(--text)" }, `▲ ${sv.category} ${fmtDate(sv.date)}`)),
+        ...svcs.filter((sv) => sv.date <= r.date && (cur === 0 || sv.date > rows[cur - 1].date))
+          .map((sv) => h("div", { style: "color:var(--text)" }, `▲ ${svcKey(sv)} ${fmtDate(sv.date)}${sv.cost != null ? ` · $${f(sv.cost, 0)}` : ""}`)),
       ].filter(Boolean));
       tip.classList.add("on");
       const scale = box.clientWidth / W, tw = tip.offsetWidth;
       let left = x * scale + 12; if (left + tw > box.clientWidth) left = x * scale - tw - 12;
       tip.style.left = `${Math.max(0, left)}px`;
+      tip.style.top = `${big ? pt + 4 : 0}px`;
     };
     const hide = () => { tip.classList.remove("on"); hair.setAttribute("opacity", 0); const [x, y] = pts[pts.length - 1]; dot.setAttribute("cx", x); dot.setAttribute("cy", y); };
     const nearest = (cx) => { const bx = box.getBoundingClientRect(), x = ((cx - bx.left) / bx.width) * W; let bi = 0; pts.forEach((p, i) => { if (Math.abs(p[0] - x) < Math.abs(pts[bi][0] - x)) bi = i; }); return bi; };
-    hit.addEventListener("pointermove", (e) => { px = e.clientX; if (!raf) raf = requestAnimationFrame(() => { raf = 0; showAt(nearest(px)); }); });
-    hit.addEventListener("pointerdown", (e) => showAt(nearest(e.clientX)));
+    let down = null;
+    hit.addEventListener("pointermove", (e) => {
+      px = e.clientX;
+      if (down && Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y) > 8) down.moved = true;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; showAt(nearest(px)); });
+    });
+    hit.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY, t: Date.now(), moved: false }; showAt(nearest(e.clientX)); });
+    hit.addEventListener("pointerup", () => { // a quick tap on the small chart opens full screen; a drag just reads values
+      if (!big && opts.onTap && down && !down.moved && Date.now() - down.t < 350) opts.onTap();
+      down = null;
+    });
     hit.addEventListener("pointerleave", hide);
     hit.addEventListener("blur", hide);
     hit.addEventListener("focus", () => showAt(cur));
     hit.addEventListener("keydown", (e) => {
       if (e.key === "ArrowLeft") { showAt(cur - 1); e.preventDefault(); }
       if (e.key === "ArrowRight") { showAt(cur + 1); e.preventDefault(); }
+      if (!big && (e.key === "Enter" || e.key === " ") && opts.onTap) { opts.onTap(); e.preventDefault(); }
     });
   }
+  const svKeyShort = (sv) => svcKey(sv).length > 16 ? svcKey(sv).slice(0, 15) + "…" : svcKey(sv);
+
+  // ------------------------------------------------------------ full-screen chart
+  const full = $("#chart-full");
+  let fullOpen = false, fullPushed = false;
+  const smallChart = () => renderChart(inRange().filter((r) => r.dash_mpg), $("#chart"), { onTap: openFull });
+  function renderFull() {
+    seg($("#cf-range"), ["6m", "1y", "all"], range, (r) => { range = r; renderFull(); }, (r) => r.toUpperCase());
+    const counts = freq(services.map(svcKey));
+    const box = $("#cf-cats");
+    if (!counts.length) box.replaceChildren(h("p", { class: "muted" }, "No maintenance logged yet. Services you add on the Service tab show up here."));
+    else box.replaceChildren(
+      h("div", { class: "cf-cats-head" }, h("span", { class: "lbl" }, "Show maintenance"),
+        h("button", { type: "button", class: "link", onclick: () => { chartHidden = new Set(); saveHidden(); } }, "All"),
+        h("button", { type: "button", class: "link", onclick: () => { chartHidden = new Set(counts.map((c) => c.k)); saveHidden(); } }, "None")),
+      h("div", { class: "cf-checks" }, ...counts.map(({ k, c }) => {
+        const cb = h("input", { type: "checkbox", checked: !chartHidden.has(k) });
+        cb.addEventListener("change", () => { cb.checked ? chartHidden.delete(k) : chartHidden.add(k); saveHidden(); });
+        return h("label", { class: "check" }, cb, h("span", {}, k), h("span", { class: "ct" }, String(c)));
+      })));
+    requestAnimationFrame(() => renderChart(inRange().filter((r) => r.dash_mpg), $("#cf-chart"), { big: true }));
+  }
+  function saveHidden() {
+    localStorage.setItem("mpg-chart-hide", JSON.stringify([...chartHidden]));
+    if (fullOpen) renderFull();
+    if (!$("#view-stats").hidden) smallChart();
+  }
+  function openFull() {
+    if (fullOpen) return;
+    fullOpen = true;
+    const r = $(".chart-card").getBoundingClientRect();
+    full.hidden = false;
+    document.body.classList.add("noscroll");
+    if (!reduced) { // grow out of the chart card
+      full.style.clipPath = `inset(${r.top}px ${innerWidth - r.right}px ${innerHeight - r.bottom}px ${r.left}px round 8px)`;
+      void full.offsetWidth;
+      full.classList.add("opening");
+      full.style.clipPath = "inset(0 0 0 0 round 0px)";
+      setTimeout(() => full.classList.remove("opening"), 520);
+    }
+    renderFull();
+    history.pushState({ chartFull: true }, ""); fullPushed = true;
+    $("#cf-close").focus();
+  }
+  function closeFull(fromPop) {
+    if (!fullOpen) return;
+    fullOpen = false;
+    const done = () => { full.hidden = true; full.style.clipPath = ""; full.classList.remove("closing"); document.body.classList.remove("noscroll"); if (!$("#view-stats").hidden) renderStats(); $(".chart-card")?.querySelector("rect[tabindex]")?.focus({ preventScroll: true }); };
+    if (!reduced) {
+      const r = $(".chart-card").getBoundingClientRect();
+      full.classList.add("closing");
+      full.style.clipPath = `inset(${r.top}px ${innerWidth - r.right}px ${innerHeight - r.bottom}px ${r.left}px round 8px)`;
+      setTimeout(done, 380);
+    } else done();
+    if (!fromPop && fullPushed) { fullPushed = false; history.back(); }
+  }
+  $("#cf-close").addEventListener("click", () => closeFull(false));
+  $("#chart-expand").addEventListener("click", openFull);
+  addEventListener("popstate", () => { if (fullOpen) { fullPushed = false; closeFull(true); } });
+  addEventListener("keydown", (e) => { if (fullOpen && e.key === "Escape") closeFull(false); });
+
 
   // ------------------------------------------------------------ service
   const intervals = () => ({ ...SERVICE_DEFAULTS, ...(appSettings.intervals || {}) });
@@ -1020,7 +1139,7 @@
   }, { passive: true });
 
   let rz = 0;
-  addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { if (!$("#view-stats").hidden) renderChart(inRange().filter((r) => r.dash_mpg)); }); });
+  addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { if (fullOpen) renderChart(inRange().filter((r) => r.dash_mpg), $("#cf-chart"), { big: true }); if (!$("#view-stats").hidden) smallChart(); }); });
 
   function renderAll() {
     renderHero();

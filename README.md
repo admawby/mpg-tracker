@@ -5,7 +5,7 @@ A phone-first fuel log: record each fill-up in a few taps, review your history a
 - Fill-ups are pre-filled from your history: today's date, last octane, drive mode and station, and trip miles worked out from the odometer (or the other way round).
 - Tag chips for things that affect mileage (Towing, Road trip, Cold weather…), notes, optional price and station.
 - History by month with search, and tap to edit or delete.
-- Stats: average and pump-math MPG, best and worst tank, miles, fuel, tank range, days between fills, averages by drive mode and tag, and an MPG-per-tank chart.
+- Stats: average and pump-math MPG, best and worst tank, miles, fuel, tank range, days between fills, averages by drive mode and tag, and an MPG-per-tank chart. Tap the chart for a full-screen view with labeled maintenance lines and checkboxes to choose which maintenance types are shown (the choice also applies to the small chart).
 - **Service log** for maintenance (oil changes, tire rotations, brakes, filters…) with cost, shop and notes, plus **mileage reminders**: each category has an interval you can edit, and current mileage is estimated from your last odometer reading and recent miles per day. Due-soon items show on the Log screen, and services appear as markers on the MPG chart.
 - Excel export, and import from an existing sheet (fuel columns `Date, MPG, Gallons, Time, Miles, Fuel, Drive Mode, Cum Miles, Notes`, plus an optional `Service` sheet with `Date, Odometer, Service, Cost, Shop, Notes`).
 - Installable on an iPhone or Android home screen, and works offline.

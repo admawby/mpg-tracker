@@ -245,6 +245,9 @@
     <figure class="chart-card">
       <figcaption>
         <span class="chart-title">MPG per tank</span>
+        <button type="button" class="icon-btn" id="chart-expand" aria-label="Open chart full screen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>
+        </button>
         <span class="legend" aria-hidden="true">
           <span class="key k-line"></span>Dash
           <span class="key k-avg"></span>5-tank avg
@@ -310,6 +313,18 @@
   <span class="tab-pill" aria-hidden="true"></span>
 </nav>
 
+<div class="chart-full" id="chart-full" role="dialog" aria-modal="true" aria-labelledby="cf-title" hidden>
+  <div class="cf-head">
+    <h2 id="cf-title">MPG per tank</h2>
+    <div class="range seg" role="radiogroup" aria-label="Range" id="cf-range"></div>
+    <button type="button" class="icon-btn cf-close" id="cf-close" aria-label="Close full screen chart">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <p class="cf-legend" aria-hidden="true"><span class="key k-line"></span>Dash <span class="key k-avg"></span>5-tank avg <span class="key k-svcline"></span>Maintenance</p>
+  <div class="chart cf-chart" id="cf-chart"></div>
+  <div class="cf-cats" id="cf-cats"></div>
+</div>
 <div class="backup-bar" id="backup-bar" role="dialog" aria-labelledby="backup-msg" hidden>
   <p id="backup-msg"><b>Saved on this phone.</b> Back up a copy to Files?</p>
   <div class="actions">

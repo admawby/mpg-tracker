@@ -331,7 +331,6 @@ figcaption { display: flex; justify-content: space-between; align-items: center;
 .chart .axis text { font: 500 10px var(--mono); fill: var(--muted); }
 .chart .ln { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .chart .avg { fill: none; stroke: var(--text-2); stroke-width: 2; stroke-dasharray: 4 4; opacity: .8; }
-.chart .area { fill: url(#accentfade); }
 .chart .dot { fill: var(--accent); stroke: var(--s1); stroke-width: 2; }
 .chart .hair { stroke: var(--text-2); stroke-width: 1; }
 .chart .draw { stroke-dasharray: var(--len); stroke-dashoffset: var(--len); animation: draw 1.4s var(--ease-out) .1s forwards; }
@@ -506,4 +505,58 @@ input.is-photo { border-color: rgba(var(--accent-rgb), .7); animation: photo-in 
    apps; start the header below that band. */
 @media (display-mode: standalone) {
   .top { padding-top: calc(var(--safe-t) + 36px); }
+}
+
+/* ---------- full-screen chart */
+body.noscroll { overflow: hidden; }
+figcaption .chart-title { margin-right: auto; }
+.icon-btn {
+  width: 40px; height: 40px; flex: none; display: inline-grid; place-items: center; border-radius: var(--pill);
+  border: 1px solid var(--line); background: var(--s2); color: var(--text); cursor: pointer;
+  transition: transform .35s var(--ease-spring), background .2s;
+}
+.icon-btn:active { transform: scale(.9); }
+.icon-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+figcaption .icon-btn { width: 32px; height: 32px; order: 3; }
+figcaption .icon-btn svg { width: 15px; height: 15px; }
+.chart-card .chart { cursor: zoom-in; }
+.chart-full {
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); display: flex; flex-direction: column; gap: 8px;
+  padding: calc(var(--safe-t) + 12px) calc(env(safe-area-inset-right, 0px) + 16px) calc(var(--safe-b) + 12px) calc(env(safe-area-inset-left, 0px) + 16px);
+  overscroll-behavior: contain;
+}
+.chart-full.opening { transition: clip-path .5s var(--ease-out); }
+.chart-full.closing { transition: clip-path .36s var(--ease-out), opacity .36s; opacity: .4; }
+.chart-full.opening > * { animation: rise .5s var(--ease-out) both; }
+.chart-full.opening > :nth-child(2) { animation-delay: 60ms; }
+.chart-full.opening > :nth-child(3) { animation-delay: 100ms; }
+.chart-full.opening > :nth-child(4) { animation-delay: 140ms; }
+@media (display-mode: standalone) { .chart-full { padding-top: calc(var(--safe-t) + 32px); } }
+.cf-head { display: flex; align-items: center; gap: 12px; }
+.cf-head h2 { margin: 0 auto 0 0; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cf-head .range { width: 168px; flex: none; }
+.cf-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font: 500 12px var(--mono); color: var(--text-2); margin: 0; }
+.key.k-svcline { width: 0; height: 12px; border-top: 0; border-left: 2px dashed var(--text-2); margin-left: 10px; margin-right: 2px; }
+.cf-chart { flex: 1; min-height: 0; cursor: crosshair; }
+.cf-chart svg { height: 100%; }
+.chart .svc-line { stroke: var(--text-2); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: .7; }
+.chart .svc-tag { fill: var(--s2); stroke: var(--line-hi); }
+.chart .svc-label { font: 600 10.5px var(--sans); fill: var(--text); }
+.cf-cats { max-height: 34vh; overflow: auto; padding-top: 4px; border-top: 1px solid var(--line); }
+.cf-cats-head { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+.cf-cats-head .lbl { margin-right: auto; }
+.link { border: 0; background: none; color: var(--accent); font: 600 14px var(--sans); padding: 6px 4px; cursor: pointer; }
+.cf-checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.check {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 14px; border-radius: var(--pill);
+  border: 1px solid var(--line); background: var(--s1); font: 600 14px var(--sans); color: var(--text-2); cursor: pointer;
+}
+.check:has(input:checked) { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.check input { width: 18px; height: 18px; min-height: 0; padding: 0; margin: 0; accent-color: var(--accent); -webkit-appearance: auto; appearance: auto; }
+.check .ct { font: 500 11px var(--mono); color: var(--muted); }
+@media (orientation: landscape) and (max-height: 500px) {
+  .chart-full { gap: 4px; padding-top: calc(var(--safe-t) + 8px); }
+  .cf-legend { display: none; }
+  .cf-cats { max-height: 22vh; }
+  .cf-checks .check { min-height: 32px; padding: 4px 10px; }
 }
